@@ -392,7 +392,7 @@ ExecStart=/ruta/al/lemoria omarchy record
 Description=Refresh the Lemoria usage widget
 
 [Timer]
-OnBootSec=1min
+OnStartupSec=1min
 OnUnitActiveSec=1min
 Persistent=true
 Unit=lemoria-usage.service
@@ -401,8 +401,10 @@ Unit=lemoria-usage.service
 WantedBy=timers.target
 ```
 
-`OnBootSec=1min` cubre el arranque; `Persistent=true` hace que una sesión
-apagada se recupere al volver. El `ExecStart` usa la ruta absoluta del CLI
+`OnStartupSec=1min` cubre el arranque y es relativo al gestor de usuario, así
+que al iniciar sesión siempre queda en el futuro. Con `OnBootSec` podía quedar
+vencido y el timer se quedaba en `elapsed` sin dispararse nunca. `Persistent=true`
+hace que una sesión apagada se recupere al volver. El `ExecStart` usa la ruta absoluta del CLI
 (resuelta con `shutil.which`) porque una unit no corre con shell y no tiene `PATH`
 de sesión.
 

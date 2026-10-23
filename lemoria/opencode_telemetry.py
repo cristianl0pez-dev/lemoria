@@ -126,7 +126,7 @@ def default_db_path() -> Path:
     return Path(data_home) / "opencode" / "opencode.db"
 
 
-# Token accounting lives on `message`, not on `session`. The session table only
+# Token accounting lives on messages, not on `session`. The session table only
 # carries a running total stamped with the session's *creation* time, which
 # makes a session that starts at 23:31 and runs past midnight report nothing at
 # all for the new day. Every message has its own timestamp and its own token
@@ -139,8 +139,68 @@ _MESSAGE_TOKEN_SUM = (
     " + COALESCE(json_extract(m.data,'$.tokens.cache.read'),0)"
     " + COALESCE(json_extract(m.data,'$.tokens.cache.write'),0)"
 )
-# Only assistant turns consume tokens; user rows carry zeroes.
-_ASSISTANT = "json_extract(m.data,'$.role') = 'assistant'"
+# opencode v2 moved turns to `session_message` and made the model a nested
+# object. Legacy `message` rows keep providerID/modelID at the top level.
+_MESSAGE_MODEL_V2 = (
+    "CASE WHEN json_type(data,'$.model') = 'object'"
+    " THEN json_extract(data,'$.model.providerID') || '/' || json_extract(data,'$.model.id')"
+    " ELSE json_extract(data,'$.providerID') || '/' || json_extract(data,'$.modelID')"
+    " END"
+)
+_MESSAGE_MODEL_LEGACY = (
+    "json_extract(data,'$.providerID') || '/' || json_extract(data,'$.modelID')"
+)
+# Both schemas are projected onto this shape so every aggregate stays SQL and
+# only has to know one dialect.
+_MESSAGE_COLUMNS = "id, session_id, time_created, data, type, model"
+# Only assistant turns consume tokens; user rows carry zeroes. v2 records the
+# role in a dedicated `type` column rather than inside the JSON payload.
+_ASSISTANT = "m.type = 'assistant'"
+
+
+def _message_cte(tables: set[str]) -> str:
+    """Normalize `session_message` (v2) and `message` (legacy) into one source.
+
+    A v2 build still keeps the legacy table for history opencode copied but
+    never deleted. The same id can appear in both, so only legacy rows that v2
+    does not own are added: counting a duplicated id twice would inflate every
+    total.
+    """
+    v2 = (
+        f"SELECT id, session_id, time_created, data, type, {_MESSAGE_MODEL_V2}"
+        " FROM session_message"
+    )
+    legacy = (
+        "SELECT id, session_id, time_created, data, json_extract(data,'$.role'),"
+        f" {_MESSAGE_MODEL_LEGACY} FROM message"
+    )
+    if "session_message" in tables:
+        branches = [v2]
+        if "message" in tables:
+            branches.append(
+                f"{legacy} WHERE id NOT IN (SELECT id FROM session_message)"
+            )
+    else:
+        branches = [legacy]
+    return f"WITH src({_MESSAGE_COLUMNS}) AS ({' UNION ALL '.join(branches)}) "
+
+
+def _session_source(tables: set[str]) -> str:
+    """The session table, with legacy rows added when v2 has taken over.
+
+    v2 sessions live in `session_v2`; `session` keeps the pre-v2 rows. Both
+    carry the same four facts the report needs.
+    """
+    columns = "id, agent, cost, parent_id, time_updated"
+    if "session_v2" not in tables:
+        return "session"
+    v2 = f"SELECT {columns} FROM session_v2"
+    if "session" not in tables:
+        return f"({v2}) AS session"
+    return (
+        f"({v2} UNION ALL SELECT {columns} FROM session"
+        " WHERE id NOT IN (SELECT id FROM session_v2)) AS session"
+    )
 
 
 def _epoch_ms(days_ago: int = 0) -> int:
@@ -195,21 +255,34 @@ class OpenCodeTelemetry:
         conn.execute("PRAGMA query_only = ON")
         return conn
 
+    @staticmethod
+    def _tables(conn: sqlite3.Connection) -> set[str]:
+        return {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+
     def _missing_columns(self, conn: sqlite3.Connection) -> set[str]:
         """What this opencode build lacks for us to read it at all.
 
-        `message` is not optional any more: token accounting, the per-day
-        chart and the per-agent model split all come from it, because a
-        session row only carries a total stamped with the session's start.
-        A build without it gets the plain "schema changed" report instead of
-        a raw "no such table" from whichever query happened to run first.
+        A message table is not optional: token accounting, the per-day chart
+        and the per-agent model split all come from it, because a session row
+        only carries a total stamped with the session's start. v2 renamed that
+        table to `session_message` and the session table to `session_v2`; a
+        build with either pair is readable. Anything else gets the plain
+        "schema changed" report instead of a raw "no such table" from
+        whichever query happened to run first.
         """
-        tables = {row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )}
-        if "message" not in tables:
+        tables = self._tables(conn)
+        if "session_message" not in tables and "message" not in tables:
             return {"message table"}
-        have = {row[1] for row in conn.execute("PRAGMA table_info(session)")}
+        session_table = (
+            "session_v2" if "session_v2" in tables
+            else "session" if "session" in tables
+            else None
+        )
+        if session_table is None:
+            return {"session table"}
+        have = {row[1] for row in conn.execute(f"PRAGMA table_info({session_table})")}
         return _SESSION_COLUMNS - have
 
     def read(self) -> Telemetry:
@@ -255,38 +328,41 @@ class OpenCodeTelemetry:
         month = month_start_ms()
         week_ago = _epoch_ms(6)
         active_cutoff = int((time.time() - ACTIVE_WINDOW_SECONDS) * 1000)
+        tables = self._tables(conn)
+        messages = _message_cte(tables)
+        sessions = _session_source(tables)
 
         row = conn.execute(
             "SELECT COUNT(*),"
             " COALESCE(SUM(CASE WHEN parent_id IS NOT NULL THEN 1 ELSE 0 END), 0),"
             " COALESCE(SUM(cost), 0)"
-            " FROM session"
+            f" FROM {sessions}"
         ).fetchone()
         out.total_sessions, out.subagent_sessions, out.total_cost = row
-        out.total_prompts = self._count_prompts(conn)
+        out.total_prompts = self._count_prompts(conn, messages)
 
         # All-time tokens, summed per message.
         out.total_tokens = conn.execute(
-            f"SELECT COALESCE(SUM({_MESSAGE_TOKEN_SUM}), 0)"
-            f" FROM message m WHERE {_ASSISTANT}"
+            f"{messages} SELECT COALESCE(SUM({_MESSAGE_TOKEN_SUM}), 0)"
+            f" FROM src m WHERE {_ASSISTANT}"
         ).fetchone()[0]
 
         # Today, by the same measure. This is the number that used to read zero
         # for anyone working past midnight.
         row = conn.execute(
-            f"SELECT COALESCE(SUM({_MESSAGE_TOKEN_SUM}), 0) FROM message m"
+            f"{messages} SELECT COALESCE(SUM({_MESSAGE_TOKEN_SUM}), 0) FROM src m"
             f" WHERE {_ASSISTANT} AND m.time_created >= ?",
             (today,),
         ).fetchone()
         out.today_tokens = row[0]
-        out.today_prompts = self._count_prompts(conn, since=today)
+        out.today_prompts = self._count_prompts(conn, messages, since=today)
         out.month_tokens = conn.execute(
-            f"SELECT COALESCE(SUM({_MESSAGE_TOKEN_SUM}), 0)"
-            f" FROM message m WHERE {_ASSISTANT} AND m.time_created >= ?",
+            f"{messages} SELECT COALESCE(SUM({_MESSAGE_TOKEN_SUM}), 0)"
+            f" FROM src m WHERE {_ASSISTANT} AND m.time_created >= ?",
             (month,),
         ).fetchone()[0]
         out.today_sessions = int(conn.execute(
-            "SELECT COUNT(DISTINCT session_id) FROM message"
+            f"{messages} SELECT COUNT(DISTINCT session_id) FROM src"
             " WHERE time_created >= ?",
             (today,),
         ).fetchone()[0])
@@ -294,9 +370,9 @@ class OpenCodeTelemetry:
         # Tokens per day, keyed by local date, for the panel's 7-day chart.
         days: dict[str, int] = {}
         for day, tokens in conn.execute(
-            f"SELECT date(m.time_created / 1000, 'unixepoch', 'localtime'),"
+            f"{messages} SELECT date(m.time_created / 1000, 'unixepoch', 'localtime'),"
             f" COALESCE(SUM({_MESSAGE_TOKEN_SUM}), 0)"
-            f" FROM message m WHERE {_ASSISTANT} AND m.time_created >= ?"
+            f" FROM src m WHERE {_ASSISTANT} AND m.time_created >= ?"
             f" GROUP BY 1",
             (week_ago,),
         ):
@@ -318,8 +394,8 @@ class OpenCodeTelemetry:
         out.active_dates = [
             day
             for (day,) in conn.execute(
-                f"SELECT DISTINCT date(m.time_created / 1000, 'unixepoch', 'localtime')"
-                f" FROM message m WHERE {_ASSISTANT} ORDER BY 1"
+                f"{messages} SELECT DISTINCT date(m.time_created / 1000, 'unixepoch', 'localtime')"
+                f" FROM src m WHERE {_ASSISTANT} ORDER BY 1"
             )
             if day
         ]
@@ -329,13 +405,13 @@ class OpenCodeTelemetry:
         # the history from the one view built to show it. The 7-day window
         # already has its own section ("tokens by day").
         for model, i, o, r, cr, cw in conn.execute(
-            f"SELECT json_extract(m.data,'$.providerID') || '/' || json_extract(m.data,'$.modelID'),"
+            f"{messages} SELECT m.model,"
             f" COALESCE(SUM(json_extract(m.data,'$.tokens.input')),0),"
             f" COALESCE(SUM(json_extract(m.data,'$.tokens.output')),0),"
             f" COALESCE(SUM(json_extract(m.data,'$.tokens.reasoning')),0),"
             f" COALESCE(SUM(json_extract(m.data,'$.tokens.cache.read')),0),"
             f" COALESCE(SUM(json_extract(m.data,'$.tokens.cache.write')),0)"
-            f" FROM message m WHERE {_ASSISTANT} GROUP BY 1"
+            f" FROM src m WHERE {_ASSISTANT} GROUP BY 1"
         ):
             if not model or "/" not in model:
                 continue
@@ -356,9 +432,9 @@ class OpenCodeTelemetry:
 
         # Today's split per model, same measure as the all-time one.
         for model, tokens in conn.execute(
-            f"SELECT json_extract(m.data,'$.providerID') || '/' || json_extract(m.data,'$.modelID'),"
+            f"{messages} SELECT m.model,"
             f" COALESCE(SUM({_MESSAGE_TOKEN_SUM}), 0)"
-            f" FROM message m WHERE {_ASSISTANT} AND m.time_created >= ? GROUP BY 1",
+            f" FROM src m WHERE {_ASSISTANT} AND m.time_created >= ? GROUP BY 1",
             (today,),
         ):
             if model and "/" in model:
@@ -367,17 +443,17 @@ class OpenCodeTelemetry:
         # Per agent. Both halves come from different tables on purpose:
         # `session` knows which runs were subagent runs and which are still
         # live, `message` knows what each agent actually spent and on what.
-        for agent, sub, live, sessions, cost in conn.execute(
+        for agent, sub, live, agent_sessions, cost in conn.execute(
             "SELECT COALESCE(agent,'(none)'),"
             " COALESCE(SUM(CASE WHEN parent_id IS NOT NULL THEN 1 ELSE 0 END),0),"
             f" COALESCE(SUM(CASE WHEN time_updated >= {active_cutoff} THEN 1 ELSE 0 END),0),"
             " COUNT(*), COALESCE(SUM(cost),0)"
-            " FROM session GROUP BY agent"
+            f" FROM {sessions} GROUP BY agent"
         ):
             entry = out.by_agent.get(agent) or AgentUsage(name=agent)
             entry.subagent_sessions += sub
             entry.active_sessions += live
-            entry.sessions += sessions
+            entry.sessions += agent_sessions
             entry.cost += cost or 0.0
             out.by_agent[agent] = entry
 
@@ -386,8 +462,8 @@ class OpenCodeTelemetry:
         # legal next to a GROUP BY: the column is neither grouped nor
         # aggregated. Two queries merged here cost less than the workaround.
         for agent, prompts in conn.execute(
-            f"SELECT COALESCE(json_extract(m.data,'$.agent'),'(none)'), COUNT(*)"
-            f" FROM message m WHERE {_ASSISTANT} GROUP BY 1"
+            f"{messages} SELECT COALESCE(json_extract(m.data,'$.agent'),'(none)'), COUNT(*)"
+            f" FROM src m WHERE {_ASSISTANT} GROUP BY 1"
         ):
             entry = out.by_agent.get(agent) or AgentUsage(name=agent)
             entry.prompts += prompts or 0
@@ -397,10 +473,10 @@ class OpenCodeTelemetry:
         # Not MAX(model) over a JSON blob: that compares strings and will
         # happily name a model the agent never used.
         for agent, model, tokens in conn.execute(
-            f"SELECT COALESCE(json_extract(m.data,'$.agent'),'(none)'),"
-            f" json_extract(m.data,'$.providerID') || '/' || json_extract(m.data,'$.modelID'),"
+            f"{messages} SELECT COALESCE(json_extract(m.data,'$.agent'),'(none)'),"
+            f" m.model,"
             f" COALESCE(SUM({_MESSAGE_TOKEN_SUM}), 0)"
-            f" FROM message m WHERE {_ASSISTANT} GROUP BY 1, 2"
+            f" FROM src m WHERE {_ASSISTANT} GROUP BY 1, 2"
         ):
             if not model or "/" not in model:
                 continue
@@ -411,9 +487,9 @@ class OpenCodeTelemetry:
         # Today, per agent: same measure as the all-time split, so the two
         # columns of the panel's table are comparable.
         for agent, tokens, prompts in conn.execute(
-            f"SELECT COALESCE(json_extract(m.data,'$.agent'),'(none)'),"
+            f"{messages} SELECT COALESCE(json_extract(m.data,'$.agent'),'(none)'),"
             f" COALESCE(SUM({_MESSAGE_TOKEN_SUM}), 0), COUNT(*)"
-            f" FROM message m WHERE {_ASSISTANT} AND m.time_created >= ? GROUP BY 1",
+            f" FROM src m WHERE {_ASSISTANT} AND m.time_created >= ? GROUP BY 1",
             (today,),
         ):
             entry = out.by_agent.setdefault(agent, AgentUsage(name=agent))
@@ -429,11 +505,14 @@ class OpenCodeTelemetry:
             entry.variant = _model_variant(entry.model)
 
     @staticmethod
-    def _count_prompts(conn: sqlite3.Connection, since: int | None = None) -> int:
-        """Assistant messages are opencode's unit of work. json_extract walks
-        the message payload, so this is the one query that scales with history;
-        the caller caches its result by database mtime."""
-        sql = "SELECT COUNT(*) FROM message WHERE json_extract(data,'$.role') = 'assistant'"
+    def _count_prompts(
+        conn: sqlite3.Connection, source: str, since: int | None = None
+    ) -> int:
+        """Assistant messages are opencode's unit of work. Reading the JSON
+        payload is the one query that scales with history; the caller caches
+        its result by database mtime. `source` is the normalized message CTE,
+        so the count means the same on both schemas."""
+        sql = f"{source} SELECT COUNT(*) FROM src WHERE type = 'assistant'"
         params: tuple = ()
         if since is not None:
             sql += " AND time_created >= ?"

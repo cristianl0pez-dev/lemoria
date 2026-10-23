@@ -134,6 +134,87 @@ def opencode_db(tmp_path):
     return path
 
 
+def _build_v2_db(path, legacy_messages=None):
+    """A v2 opencode database: `session_v2` plus `session_message`.
+
+    v2 records the role in a `type` column and nests the model under `model`
+    instead of the legacy top-level providerID/modelID pair. The telemetry is
+    supposed to normalize both shapes onto one source.
+    """
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE session_v2 (id text PRIMARY KEY, agent text, model text,"
+        " cost real, parent_id text, time_created integer, time_updated integer)"
+    )
+    conn.execute(
+        "CREATE TABLE session_message (id text PRIMARY KEY, session_id text,"
+        " type text, seq integer, time_created integer, time_updated integer,"
+        " data text)"
+    )
+    now = int(time.time() * 1000)
+    old = now - 45 * 86_400_000  # always a previous calendar month
+    conn.executemany(
+        "INSERT INTO session_v2 (id, agent, model, cost, parent_id, time_created,"
+        " time_updated) VALUES (?,?,?,?,?,?,?)",
+        [
+            ("v1", "orchestrator", '{"id":"big-pickle"}', 0.5, None, now, now),
+            ("v2", "review-agent", '{"id":"gpt-5.5"}', 0.0, "v1", now, now),
+            ("v3", "orchestrator", '{"id":"ancient"}', 0.0, None, old, old),
+        ],
+    )
+
+    def message(mid, sid, seq, ts, mtype, *, tokens=None,
+                agent="orchestrator", model_id="big-pickle"):
+        data = {
+            "agent": agent,
+            "model": {"id": model_id, "providerID": "opencode", "variant": "default"},
+        }
+        if tokens is not None:
+            data["tokens"] = tokens
+        return (mid, sid, mtype, seq, ts, ts, json.dumps(data))
+
+    conn.executemany(
+        "INSERT INTO session_message (id, session_id, type, seq, time_created,"
+        " time_updated, data) VALUES (?,?,?,?,?,?,?)",
+        [
+            # 1000 + 500 + 10 reasoning + 20 + 5 = 1535, today.
+            message("v-m1", "v1", 1, now, "assistant",
+                    tokens={"input": 1000, "output": 500, "reasoning": 10,
+                            "cache": {"read": 20, "write": 5}}),
+            message("v-u1", "v1", 2, now, "user"),
+            # 2000 + 300 = 2300, today, on another model and agent.
+            message("v-m2", "v2", 1, now, "assistant", agent="review-agent",
+                    model_id="gpt-5.5",
+                    tokens={"input": 2000, "output": 300, "reasoning": 0,
+                            "cache": {"read": 0, "write": 0}}),
+            # 7 + 3 = 10, last month: all-time only.
+            message("v-m3", "v3", 1, old, "assistant", model_id="ancient",
+                    tokens={"input": 7, "output": 3, "reasoning": 0,
+                            "cache": {"read": 0, "write": 0}}),
+            # Not an assistant turn: must not count as a prompt or spend.
+            message("v-model", "v1", 3, now, "model-switched"),
+        ],
+    )
+    if legacy_messages is not None:
+        conn.execute(
+            "CREATE TABLE message (id text PRIMARY KEY, session_id text,"
+            " time_created integer, data text)"
+        )
+        conn.executemany(
+            "INSERT INTO message (id, session_id, time_created, data)"
+            " VALUES (?,?,?,?)",
+            legacy_messages,
+        )
+    conn.commit()
+    conn.close()
+    return path
+
+
+@pytest.fixture
+def opencode_db_v2(tmp_path):
+    return _build_v2_db(tmp_path / "opencode-v2.db")
+
+
 class TestParsing:
     def test_folded_description_is_joined_not_kept_as_indicator(self, agents_dir):
         parsed = parse_agent(agents_dir / "review-agent.md")
@@ -411,6 +492,75 @@ class TestTelemetry:
         before = opencode_db.stat().st_mtime_ns
         OpenCodeTelemetry(opencode_db).read()
         assert opencode_db.stat().st_mtime_ns == before
+
+
+class TestTelemetryV2:
+    """opencode v2 writes `session_message`/`session_v2` and stopped touching
+    the legacy tables, so a v1-only reader reports a frozen total forever."""
+
+    def test_reads_totals_from_the_v2_schema(self, opencode_db_v2):
+        telemetry = OpenCodeTelemetry(opencode_db_v2).read()
+
+        assert telemetry.available
+        assert telemetry.total_sessions == 3
+        assert telemetry.subagent_sessions == 1
+        assert telemetry.total_prompts == 3
+        # 1535 + 2300 + 10; the user and model-switched rows spend nothing.
+        assert telemetry.total_tokens == 3845
+        assert telemetry.today_tokens == 3835
+        assert telemetry.month_tokens == 3835  # the 45-day-old row is excluded
+        assert telemetry.total_cost == pytest.approx(0.5)
+
+    def test_v2_models_use_the_nested_model_object(self, opencode_db_v2):
+        telemetry = OpenCodeTelemetry(opencode_db_v2).read()
+
+        assert telemetry.by_model["opencode/big-pickle"].tokens == 1535
+        assert telemetry.by_model["opencode/gpt-5.5"].tokens == 2300
+        assert telemetry.by_model["opencode/ancient"].tokens == 10
+
+    def test_v2_agents_come_from_both_tables(self, opencode_db_v2):
+        telemetry = OpenCodeTelemetry(opencode_db_v2).read()
+
+        orchestrator = telemetry.by_agent["orchestrator"]
+        assert orchestrator.sessions == 2
+        assert orchestrator.tokens == 1545
+        assert orchestrator.today_tokens == 1535
+        review = telemetry.by_agent["review-agent"]
+        assert review.sessions == 1
+        assert review.subagent_sessions == 1
+        assert review.tokens == 2300
+
+    def test_a_message_present_in_both_tables_is_counted_once(self, tmp_path):
+        now = int(time.time() * 1000)
+        duplicate = (
+            "v-m1", "v1", now, json.dumps({
+                "role": "assistant", "agent": "orchestrator",
+                "providerID": "opencode", "modelID": "big-pickle",
+                # Deliberately different from the v2 row: if this branch is
+                # counted too, the total is wrong by 999999.
+                "tokens": {"input": 999_999, "output": 0, "reasoning": 0,
+                           "cache": {"read": 0, "write": 0}},
+            }),
+        )
+        legacy_only = (
+            "l-1", "v1", now, json.dumps({
+                "role": "assistant", "agent": "orchestrator",
+                "providerID": "opencode", "modelID": "legacy-model",
+                "tokens": {"input": 100, "output": 20, "reasoning": 0,
+                           "cache": {"read": 0, "write": 0}},
+            }),
+        )
+        path = _build_v2_db(
+            tmp_path / "mixed.db", legacy_messages=[duplicate, legacy_only]
+        )
+
+        telemetry = OpenCodeTelemetry(path).read()
+
+        # 3845 from the v2 fixture + 120 from the legacy-only row.
+        assert telemetry.total_tokens == 3965
+        assert telemetry.by_model["opencode/big-pickle"].tokens == 1535
+        assert telemetry.by_model["opencode/legacy-model"].tokens == 120
+        assert telemetry.total_prompts == 4
 
 
 class TestUsageCommand:

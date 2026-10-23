@@ -564,7 +564,7 @@ TIMER_UNIT = """[Unit]
 Description=Refresh the Lemoria usage widget
 
 [Timer]
-OnBootSec=1min
+OnStartupSec=1min
 OnUnitActiveSec=1min
 Persistent=true
 Unit=lemoria-usage.service
