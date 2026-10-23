@@ -212,8 +212,8 @@ def _epoch_ms(days_ago: int = 0) -> int:
     session under the previous day for anyone west of Greenwich, which is
     exactly where this is being read.
     """
-    # Naive local time on purpose: see the docstring. noqa: DTZ005
-    when = datetime.now() - timedelta(days=days_ago)  # noqa: DTZ005
+    # Naive local time on purpose: see the docstring.
+    when = datetime.now().astimezone().replace(tzinfo=None) - timedelta(days=days_ago)
     start_of_day = when.replace(hour=0, minute=0, second=0, microsecond=0)
     return int(start_of_day.timestamp() * 1000)
 
@@ -381,9 +381,12 @@ class OpenCodeTelemetry:
                 days[day] = days.get(day, 0) + tokens
         out.recent_days = [
             {
-                "date": (datetime.now() - timedelta(days=offset)).strftime("%Y-%m-%d"),  # noqa: DTZ005
+                "date": (datetime.now().astimezone() - timedelta(days=offset)).strftime(
+                    "%Y-%m-%d"
+                ),
                 "messageCount": days.get(
-                    (datetime.now() - timedelta(days=offset)).strftime("%Y-%m-%d"), 0  # noqa: DTZ005
+                    (datetime.now().astimezone() - timedelta(days=offset)).strftime("%Y-%m-%d"),
+                    0,
                 ),
             }
             for offset in range(6, -1, -1)

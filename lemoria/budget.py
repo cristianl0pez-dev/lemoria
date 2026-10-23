@@ -143,5 +143,7 @@ def month_start_ms(now: datetime | None = None) -> int:
     # whose historical offset was -04 shifts the budget by an hour. A naive
     # timestamp is interpreted in the machine's local timezone rules for that
     # date, which is exactly what SQLite's `localtime` modifier does too.
-    local_start = datetime(moment.year, moment.month, 1)  # noqa: DTZ001
+    local_start = moment.replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+    )
     return int(local_start.timestamp() * 1000)
