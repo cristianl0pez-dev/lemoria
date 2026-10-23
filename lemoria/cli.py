@@ -495,20 +495,17 @@ def usage_cmd(as_json: bool):
 
     agents = [entry for entry in telemetry.by_agent.values() if entry.tokens]
     if agents:
-        click.echo("\nBy agent (all-time)")
+        click.echo("\nBy agent (all-time) · model: last used")
         for entry in sorted(agents, key=lambda e: -e.tokens):
             live = f"  {entry.active_sessions} live" if entry.active_sessions else ""
             # The model matters as much as the volume: an agent is not pinned to
-            # one, so show the heaviest and note the rest rather than implying
-            # a single one.
-            models = list(entry.models.items())
-            if len(models) > 1:
-                rest = f"  (+{len(models) - 1} more)"
-                models = models[:1]
-            else:
-                rest = ""
-            model = f"  {short(models[0][0])}" if models else ""
-            share = f" ({models[0][1] / entry.tokens:.0%})" if models else ""
+            # one. Show the last one it used, and note the rest by count.
+            count = len(entry.models)
+            rest = f"  (+{count - 1} more)" if count > 1 else ""
+            model = f"  {short(entry.model)}" if entry.model else ""
+            share = ""
+            if entry.model and entry.tokens:
+                share = f" ({entry.models.get(entry.model, 0) / entry.tokens:.0%})"
             click.echo(f"  {entry.name:24} {human(entry.tokens):>9}  "
                        f"{entry.sessions} sessions{live}")
             click.echo(f"  {'':24} {'':>9}  {model}{share}{rest}")

@@ -115,9 +115,9 @@ def opencode_db(tmp_path):
                       {"input": 300, "output": 30, "reasoning": 3,
                        "cache": {"read": 0, "write": 0}}, "review-agent"),
             # s4: 1 + 1 = 2, on a model that sorts last as a string. Any
-            # implementation that takes the alphabetically last model, or the
-            # one from the most recently *touched* session, is wrong here: the
-            # heaviest model is the honest answer.
+            # implementation that takes the alphabetically last model is wrong
+            # here. Its message is older than a1, so the last-used rule names
+            # big-pickle too: both rules agree on this fixture.
             assistant("a4", "s4", now - 1000, "opencode", "zzz-stale",
                       {"input": 1, "output": 1, "reasoning": 0,
                        "cache": {"read": 0, "write": 0}}, "orchestrator"),
@@ -127,6 +127,55 @@ def opencode_db(tmp_path):
             assistant("a5", "s5", now - 2_592_000_000, "opencode", "ancient",
                       {"input": 7, "output": 3, "reasoning": 0,
                        "cache": {"read": 0, "write": 0}}, "orchestrator"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+@pytest.fixture
+def opencode_db_model_switch(tmp_path):
+    """The heaviest model is old; a lighter model is the most recent one.
+
+    `model` must report the latest assistant turn, while `models` stays
+    ordered by volume: the CLI's "+N more" and the panel's breakdown depend
+    on the heaviest-first order.
+    """
+    path = tmp_path / "model-switch.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE session (id text PRIMARY KEY, agent text, model text,"
+        " cost real, parent_id text, time_created integer, time_updated integer)"
+    )
+    conn.execute(
+        "CREATE TABLE message (id text PRIMARY KEY, session_id text,"
+        " time_created integer, data text)"
+    )
+    now = int(time.time() * 1000)
+    conn.execute(
+        "INSERT INTO session VALUES (?,?,?,?,?,?,?)",
+        ("s1", "orchestrator", None, 0.0, None, now, now),
+    )
+
+    def assistant(mid, ts, provider, model_id, input_tokens):
+        return (
+            mid, "s1", ts, json.dumps({
+                "role": "assistant", "agent": "orchestrator",
+                "providerID": provider, "modelID": model_id,
+                "tokens": {"input": input_tokens, "output": 0, "reasoning": 0,
+                           "cache": {"read": 0, "write": 0}},
+            }),
+        )
+
+    conn.executemany(
+        "INSERT INTO message (id, session_id, time_created, data) VALUES (?,?,?,?)",
+        [
+            # Abandoned a week ago, but far heavier: 10 000 tokens.
+            assistant("m-old", now - 7 * 86_400_000,
+                      "opencode", "big-pickle", 10_000),
+            # What the agent actually runs now: 100 tokens.
+            assistant("m-new", now, "deepseek", "deepseek-flash", 100),
         ],
     )
     conn.commit()
@@ -408,6 +457,26 @@ class TestTelemetry:
         assert by_model == telemetry.total_tokens
         assert by_agent == telemetry.total_tokens
 
+    def test_agent_model_is_the_last_used_not_the_all_time_heaviest(
+        self, opencode_db_model_switch
+    ):
+        """The reported model is what the agent runs now.
+
+        The heaviest model can be one the user abandoned days ago, so taking
+        the top of the volume ranking names the wrong model forever. The
+        ranking itself stays: it is the order the CLI and panel iterate.
+        """
+        entry = OpenCodeTelemetry(opencode_db_model_switch).read().by_agent[
+            "orchestrator"
+        ]
+
+        assert entry.model == "deepseek/deepseek-flash"
+        assert list(entry.models) == [
+            "opencode/big-pickle",
+            "deepseek/deepseek-flash",
+        ]
+        assert entry.models["opencode/big-pickle"] == 10_000
+
     def test_a_session_spanning_midnight_counts_today(self, tmp_path):
         """The bug this whole change exists for.
 
@@ -684,6 +753,19 @@ class TestOmarchyRecord:
         assert agents["orchestrator"]["todayTokens"] >= 0
         assert agents["orchestrator"]["model"] == "opencode/big-pickle"
         assert "opencode/big-pickle" in agents["orchestrator"]["models"]
+
+    def test_panel_model_is_the_last_used_not_the_heaviest(
+        self, opencode_db_model_switch
+    ):
+        """The panel inherits the same rule as `agent status`: the record's
+        `model` is the latest assistant turn, while `models` stays
+        heaviest-first for the breakdown."""
+        record = build_record(OpenCodeTelemetry(opencode_db_model_switch).read())
+        agent = {a["agent"]: a for a in record["agents"]}["orchestrator"]
+
+        assert agent["model"] == "deepseek/deepseek-flash"
+        assert agent["observedModel"] == "deepseek/deepseek-flash"
+        assert next(iter(agent["models"])) == "opencode/big-pickle"
 
     def test_record_prefers_configured_default_over_stale_observed_model(self, opencode_db):
         from lemoria.omarchy import KnownAgent

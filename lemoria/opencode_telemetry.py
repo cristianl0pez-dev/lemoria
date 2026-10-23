@@ -93,7 +93,8 @@ class AgentUsage:
     # Every model this agent has used, heaviest first. An agent is not pinned
     # to one model: the orchestrator runs on whatever the user picked, and a
     # subagent can be switched mid-session. Reporting a single "model" for an
-    # agent is how a wrong answer becomes invisible.
+    # agent is how a wrong answer becomes invisible. ``model`` is the one used
+    # last, not the heaviest: "what is it running" is about recency.
     models: dict = field(default_factory=dict)
 
 
@@ -496,11 +497,30 @@ class OpenCodeTelemetry:
             entry.today_tokens += tokens
             entry.today_prompts += prompts
 
+        # The model an agent ran *last*, not the one it spent the most on. An
+        # agent is not pinned to a model, so the heaviest all-time is often a
+        # model the user abandoned months ago. Ordering the whole source by
+        # timestamp and keeping the first row per agent needs no window
+        # function, so it works on every SQLite opencode ships against.
+        last_used: dict[str, str] = {}
+        for agent, model in conn.execute(
+            f"{messages} SELECT COALESCE(json_extract(m.data,'$.agent'),'(none)'),"
+            f" m.model FROM src m"
+            f" WHERE {_ASSISTANT} AND m.model IS NOT NULL"
+            f" AND instr(m.model,'/') > 0 AND m.time_created IS NOT NULL"
+            f" ORDER BY m.time_created DESC"
+        ):
+            last_used.setdefault(agent, model)
+
         for entry in out.by_agent.values():
             if entry.models:
-                # Heaviest first, so the headline model is the one that matters.
+                # `models` stays heaviest first: the CLI's "+N more" and the
+                # panel's breakdown are ordered by volume. The single `model`
+                # is the last one used, falling back to the heaviest when no
+                # timestamp resolves.
                 ordered = sorted(entry.models.items(), key=lambda kv: -kv[1])
-                entry.model = ordered[0][0]
+                last = last_used.get(entry.name)
+                entry.model = last if last in entry.models else ordered[0][0]
                 entry.models = dict(ordered)
             entry.variant = _model_variant(entry.model)
 
