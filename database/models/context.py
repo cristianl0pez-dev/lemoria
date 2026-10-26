@@ -1,6 +1,8 @@
 import uuid
-from sqlalchemy import String, Text, ForeignKey, Integer
+
+from sqlalchemy import ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from .base import Base, TimestampMixin
 
 

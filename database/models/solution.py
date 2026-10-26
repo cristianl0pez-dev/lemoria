@@ -1,8 +1,11 @@
 import uuid
-from sqlalchemy import String, Text, ForeignKey, CheckConstraint
+
+from sqlalchemy import CheckConstraint, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
-from .base import Base, TimestampMixin
+
 from database.enums import SolutionOutcome
+
+from .base import Base, TimestampMixin
 
 
 class Solution(TimestampMixin, Base):

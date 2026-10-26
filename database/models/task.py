@@ -1,8 +1,11 @@
 import uuid
-from sqlalchemy import String, Text, ForeignKey, Integer, Boolean, CheckConstraint
+
+from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from .base import Base, TimestampMixin
+
 from database.enums import TaskStatus
+
+from .base import Base, TimestampMixin
 
 
 class Task(TimestampMixin, Base):

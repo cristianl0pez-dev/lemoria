@@ -60,8 +60,7 @@ jobs:
       - name: Lint
         if: matrix.python-version == '3.13'
         run: |
-          pip install ruff
-          ruff check lemoria/
+          ruff check .
 
       - name: Upload coverage
         if: matrix.python-version == '3.13'

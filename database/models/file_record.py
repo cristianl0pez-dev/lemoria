@@ -1,8 +1,11 @@
 import uuid
-from sqlalchemy import String, Text, ForeignKey, Integer, CheckConstraint
+
+from sqlalchemy import CheckConstraint, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from .base import Base, TimestampMixin
+
 from database.enums import CommitFileStatus
+
+from .base import Base, TimestampMixin
 
 
 class FileRecord(TimestampMixin, Base):

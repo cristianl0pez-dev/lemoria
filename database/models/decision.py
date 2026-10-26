@@ -1,8 +1,11 @@
 import uuid
-from sqlalchemy import String, Text, ForeignKey, CheckConstraint
+
+from sqlalchemy import CheckConstraint, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from .base import Base, TimestampMixin
+
 from database.enums import DecisionStatus
+
+from .base import Base, TimestampMixin
 
 
 class Decision(TimestampMixin, Base):

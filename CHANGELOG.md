@@ -39,6 +39,16 @@ while the project moves toward public releases.
 - `install.sh` ya no copia `.opencode/commands/` ni instala o registra el plugin
   del menú Ctrl+P.
 
+### Fixed
+- `ruff check --fix database/` corrigió 25 errores auto-fixables en 16 archivos
+  de `database/models/`: 16 de orden de imports, 5 de imports sin usar, 3 de
+  `datetime.timezone.utc` → `datetime.UTC` y 1 de `__all__` desordenado. Sin
+  cambios de comportamiento.
+- CI: el paso **Lint** ya no ejecuta `pip install ruff` (que pisaba el
+  `ruff==0.17.2` fijado en dev extras) y ahora corre `ruff check .` en vez de
+  `ruff check lemoria/`, cubriendo también `database/` y `tests/`. Verificación:
+  `ruff check .` sin errores y 252 tests pasando.
+
 ## [0.3.0] - 2026-09-30
 
 ### Added
