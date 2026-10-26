@@ -1,23 +1,5 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "default_agent": "orchestrator",
-  "commands": {
-    "new-feature": {
-      "description": "Run the full SDD flow for a new feature",
-      "template": "Run the full Lemoria SDD workflow: create project if needed, start conversation, create PRD, create tasks, delegate to subagents, and track everything in the database. Use lemoria CLI commands."
-    },
-    "lemoria-project": {
-      "description": "Create or list Lemoria projects",
-      "template": "Use lemoria project create <name> to create a new project, or lemoria project list to show all projects"
-    },
-    "lemoria-flow": {
-      "description": "Start an SDD flow from an idea",
-      "template": "Run lemoria flow start <project-id> '<idea description>' to begin a Spec-Driven Development flow"
-    },
-    "lemoria-agent": {
-      "description": "Register or list Lemoria agents",
-      "template": "Use lemoria agent register <name> <role> to register an agent, or lemoria agent list to show all agents"
-    }
-  },
   "skills": [".opencode/skills", "~/.config/opencode/skills"]
 }

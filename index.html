@@ -722,8 +722,8 @@
       <dl class="hero-stats">
         <div><dt>8</dt><dd data-i18n="hero.stat.agents">Agentes</dd></div>
         <div><dt>13</dt><dd data-i18n="hero.stat.sdd">Pasos SDD</dd></div>
-        <div><dt>234</dt><dd data-i18n="hero.stat.tests">Tests</dd></div>
-        <div><dt>7</dt><dd data-i18n="hero.stat.enums">Skills</dd></div>
+        <div><dt>252</dt><dd data-i18n="hero.stat.tests">Tests</dd></div>
+        <div><dt>8</dt><dd data-i18n="hero.stat.enums">Skills</dd></div>
       </dl>
     </div>
   </section>
@@ -784,13 +784,13 @@
         </div>
         <div class="feat-card fade-in">
           <div class="num">[10]</div>
-          <h3 data-i18n="feat.10.title">234 Tests + CI Automático</h3>
+          <h3 data-i18n="feat.10.title">252 Tests + CI Automático</h3>
           <p data-i18n="feat.10.desc">Suite con pytest en SQLite in-memory + CI en GitHub Actions con matrix Python 3.11/3.12/3.13.</p>
         </div>
         <div class="feat-card fade-in">
           <div class="num">[11]</div>
-          <h3 data-i18n="feat.11.title">7 Skills Modulares</h3>
-          <p data-i18n="feat.11.desc">Skills especializadas: frontend, backend, database, testing, code-review, git-workflow, documentation.</p>
+          <h3 data-i18n="feat.11.title">8 Skills Modulares</h3>
+          <p data-i18n="feat.11.desc">Skills especializadas: lemoria, frontend, backend, database, testing, code-review, git-workflow, documentation.</p>
         </div>
         <div class="feat-card fade-in">
           <div class="num">[12]</div>
@@ -810,7 +810,7 @@
         <div class="feat-card fade-in">
           <div class="num">[15]</div>
           <h3 data-i18n="feat.15.title">Modelos por agente</h3>
-          <p data-i18n="feat.15.desc">Fija modelo y esfuerzo por agente desde CLI o desde el menú Ctrl+P de OpenCode. Sin editar archivos a mano.</p>
+          <p data-i18n="feat.15.desc">Fija modelo y esfuerzo por subagente desde el CLI. El orquestador usa el modelo y effort de la sesión (<code>/models</code> y <code>/variants</code>). Sin editar archivos a mano.</p>
         </div>
       </div>
     </div>
@@ -976,7 +976,7 @@
           <span class="num">step/3</span>
           <div class="content">
             <h3 data-i18n="install.step3.title">Crea tu primer proyecto</h3>
-            <p><code>lemoria project create <span class="arg">"Mi proyecto"</span></code> <span data-i18n="install.step3.desc">— después abre OpenCode y usa /lemoria o el menú Ctrl+P.</span></p>
+            <p><code>opencode</code> <span data-i18n="install.step3.desc">— en la carpeta del proyecto, describí la feature: el orquestador crea el proyecto, el PRD y las tareas.</span></p>
           </div>
         </li>
       </ul>
@@ -993,9 +993,9 @@
           <div class="line out" style="margin-top: 10px;"><span class="k">→ uv</span> <span class="n">uv 0.12.1</span> <span class="arg" data-i18n="install.term.uv">(primario)</span></div>
           <div class="line out"><span class="k">→ postgres</span> <span class="n">localhost:5432</span> <span class="arg" data-i18n="install.term.pg">(ya respondía — no se tocó)</span></div>
           <div class="line out"><span class="k" data-i18n="install.term.done">✓ Lemoria instalado vía:</span> <span class="n">uv</span></div>
-          <div class="line" style="margin-top: 10px;"><span class="ps1">$</span><span class="cmd">lemoria project create <span class="arg">"Mi proyecto"</span> -d <span class="arg">"Descripción"</span></span></div>
-          <div class="line"><span class="ps1">$</span><span class="cmd">lemoria flow start <span class="arg">&lt;project-id&gt;</span> <span class="arg">"Mi idea"</span></span></div>
-          <div class="line"><span class="ps1">$</span><span class="cmd">opencode .</span></div>
+          <div class="line" style="margin-top: 10px;"><span class="ps1">$</span><span class="cmd">mkdir mi-proyecto &amp;&amp; cd mi-proyecto</span></div>
+          <div class="line"><span class="ps1">$</span><span class="cmd">opencode</span></div>
+          <div class="line out"><span class="arg">"Quiero un endpoint POST /login con JWT"</span></div>
         </div>
       </div>
 
@@ -1055,10 +1055,10 @@
         'feat.08.desc': 'Exporta DB a markdown con wikilinks y restaura DB desde notas. Sin pérdida de datos.',
         'feat.09.title': 'Datos consistentes',
         'feat.09.desc': 'Estados y relaciones validados en la base de datos para evitar registros ambiguos o rotos.',
-        'feat.10.title': '234 Tests + CI Automático',
+        'feat.10.title': '252 Tests + CI Automático',
         'feat.10.desc': 'Suite con pytest en SQLite in-memory + CI en GitHub Actions con matrix Python 3.11/3.12/3.13.',
-        'feat.11.title': '7 Skills Modulares',
-        'feat.11.desc': 'Skills especializadas: frontend, backend, database, testing, code-review, git-workflow, documentation.',
+        'feat.11.title': '8 Skills Modulares',
+        'feat.11.desc': 'Skills especializadas: lemoria, frontend, backend, database, testing, code-review, git-workflow, documentation.',
         'feat.12.title': 'Context7 MCP',
         'feat.12.desc': 'Documentación en tiempo real de librerías y frameworks vía MCP server.',
         'feat.13.title': 'Telemetría de opencode',
@@ -1066,7 +1066,7 @@
         'feat.14.title': 'Panel de Omarchy',
         'feat.14.desc': 'Instala un plugin propio de Omarchy: total histórico siempre visible, presupuesto mensual y tabla por agente con modelo. No toca /usr/share/omarchy.',
         'feat.15.title': 'Modelos por agente',
-        'feat.15.desc': 'Fija modelo y esfuerzo por agente desde CLI o desde el menú Ctrl+P de OpenCode. Sin editar archivos a mano.',
+        'feat.15.desc': 'Fija modelo y esfuerzo por subagente desde el CLI. El orquestador usa el modelo y effort de la sesión (/models y /variants). Sin editar archivos a mano.',
         'tele.title': 'Tu consumo, de verdad',
         'tele.desc': 'Lemoria consolida sesiones, tokens y costo en una sola lectura: cuánto llevas, qué modelos usaste y qué agente generó el consumo.',
         'tele.panel.title': 'Panel Omarchy',
@@ -1134,7 +1134,7 @@
         'install.step2.title': 'Corre el instalador',
         'install.step2.desc': '— instala Lemoria, configura agentes y deja listo OpenCode.',
         'install.step3.title': 'Crea tu primer proyecto',
-        'install.step3.desc': '— después abre OpenCode y usa /lemoria o el menú Ctrl+P.',
+        'install.step3.desc': '— en la carpeta del proyecto, describí la feature: el orquestador crea el proyecto, el PRD y las tareas.',
         'install.term.uv': '(primario)',
         'install.term.pg': '(ya respondía — no se tocó)',
         'install.term.done': '✓ Lemoria instalado vía:',
@@ -1176,10 +1176,10 @@
         'feat.08.desc': 'Export DB to markdown with wikilinks and restore DB from notes. No data loss.',
         'feat.09.title': 'Consistent data',
         'feat.09.desc': 'Database-validated states and relationships keep records unambiguous and intact.',
-        'feat.10.title': '234 Tests + Automated CI',
+        'feat.10.title': '252 Tests + Automated CI',
         'feat.10.desc': 'Test suite with pytest on SQLite in-memory + CI on GitHub Actions with Python 3.11/3.12/3.13 matrix.',
-        'feat.11.title': '7 Modular Skills',
-        'feat.11.desc': 'Specialized skills: frontend, backend, database, testing, code-review, git-workflow, documentation.',
+        'feat.11.title': '8 Modular Skills',
+        'feat.11.desc': 'Specialized skills: lemoria, frontend, backend, database, testing, code-review, git-workflow, documentation.',
         'feat.12.title': 'Context7 MCP',
         'feat.12.desc': 'Real-time documentation for libraries and frameworks via MCP server.',
         'feat.13.title': 'opencode Telemetry',
@@ -1187,7 +1187,7 @@
         'feat.14.title': 'Omarchy Panel',
         'feat.14.desc': 'Installs a dedicated Omarchy plugin: all-time total always visible, monthly token budget, and a per-agent table with the model. Never touches /usr/share/omarchy.',
         'feat.15.title': 'Per-agent Models',
-        'feat.15.desc': 'Pin model and reasoning effort per agent from the CLI or the OpenCode Ctrl+P menu. No manual file edits.',
+        'feat.15.desc': 'Pin model and reasoning effort per subagent from the CLI. The orchestrator uses the session model and effort (/models and /variants). No manual file edits.',
         'tele.title': 'Your usage, for real',
         'tele.desc': 'Lemoria consolidates sessions, tokens and cost into one view: how much you used, which models ran, and which agent generated the usage.',
         'tele.panel.title': 'Omarchy panel',
@@ -1255,7 +1255,7 @@
         'install.step2.title': 'Run the installer',
         'install.step2.desc': '— installs Lemoria, configures agents, and leaves OpenCode ready.',
         'install.step3.title': 'Create your first project',
-        'install.step3.desc': '— then open OpenCode and use /lemoria or the Ctrl+P menu.',
+        'install.step3.desc': '— in the project folder, describe the feature: the orchestrator creates the project, PRD and tasks.',
         'install.term.uv': '(primary)',
         'install.term.pg': '(already answering — left alone)',
         'install.term.done': '✓ Lemoria installed via:',

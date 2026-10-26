@@ -66,7 +66,7 @@ Elige **1) Global**.
 | 3 | Verifica las credenciales contra el PostgreSQL que ya responde, o lo levanta con Docker si no hay ninguno. Si no hay ninguna de las dos, se detiene con la guía de instalación |
 | 4 | Instala `lemoria` como comando global (`uv` → venv propio → `pip`) |
 | 5 | Inicializa la base de datos |
-| 6 | Copia agentes, skills, slash commands y el plugin del menú Ctrl+P a `~/.config/opencode/`; preserva plugins existentes en `cli.json` |
+| 6 | Copia los 8 agentes y 8 skills a `~/.config/opencode/`; crea la config global si falta o le agrega `default_agent: orchestrator` sin pisar otras claves (si ya hay otro default, lo respeta y avisa) |
 | 7 | Configura Context7 MCP (documentación en tiempo real para librerías) |
 | 8 | Detecta tu entorno: registra los agentes, ofrece el panel de Omarchy y avisa si no hay opencode |
 | 9 | Resumen con lo que quedó instalado |
@@ -171,9 +171,17 @@ lemoria usage
 # rm -rf ~/lemoria
 ```
 
-> Si borraste el repo, `lemoria agent sync` y `agent model` van a seguir
-> funcionando: leen y escriben los `.md` de donde estén, y el modo global los
-> deja en `~/.config/opencode/agents/`.
+> Si borraste el repo, antes de usar `lemoria agent model` o `lemoria agent
+> effort` apuntá el CLI al directorio global de agentes:
+>
+> ```bash
+> export LEMORIA_OPENCODE_AGENTS_DIR=~/.config/opencode/agents
+> ```
+>
+> Sin esa variable el default es `./.opencode/agents`, que es el directorio del
+> repo que ya borraste. Para `lemoria agent sync` la alternativa puntual es
+> `lemoria agent sync --dir ~/.config/opencode/agents`; `agent model` y
+> `agent effort` no tienen `--dir`, así que usan la variable de entorno.
 
 ## Por qué `pip install` falla en Arch con Python 3.14
 
@@ -278,15 +286,9 @@ git init
 opencode
 ```
 
-Los agentes globales están disponibles inmediatamente. También queda disponible el slash command `/lemoria` en OpenCode (no depende de Ctrl+P):
+Los agentes globales están disponibles inmediatamente y la configuración global agrega `default_agent: orchestrator` si falta (si ya hay otro valor, lo respeta y avisa): con el orquestador como default, al abrir OpenCode en cualquier carpeta el orquestador toma la sesión. No hay que crear el proyecto a mano ni invocar un slash command; describí la feature en el prompt:
 
 ```text
-/lemoria quiero un endpoint POST /login con JWT
-```
-
-El orquestador responde a cualquier feature request:
-
-```
 Tú: "quiero un endpoint POST /login con JWT"
 → Orchestrator ejecuta el flujo SDD completo
 → Crea proyecto en PostgreSQL, conversación, PRD, tareas
@@ -294,50 +296,7 @@ Tú: "quiero un endpoint POST /login con JWT"
 → Todo queda registrado con trazabilidad
 ```
 
-## Menú Ctrl+P de Lemoria
-
-El instalador copia un plugin del TUI a
-`~/.config/opencode/plugins/lemoria-menu/` y lo registra en `cli.json`.
-Con eso, **Ctrl+P** abre la paleta de comandos con un grupo **Lemoria**. El
-grupo nunca se cuela en *Suggested*: se busca por nombre.
-
-| Entrada | Qué hace |
-|---|---|
-| `Lemoria` | Recordatorio de usar `/lemoria <solicitud>` en el prompt |
-| `Lemoria: agentes` | Estado de los agentes (`lemoria agent status`) |
-| `Lemoria: modelo` | Fija modelo y esfuerzo: agente → modelo → esfuerzo |
-| `Lemoria: limpiar modelo` | Quita el pin y el agente vuelve a heredar |
-| `Lemoria: limpiar esfuerzo` | Quita solo el esfuerzo |
-| `Lemoria: sync` | Sincroniza los `.md` de agentes con la DB y recarga |
-| `Lemoria: desinstalar` | Desinstalar desde acá |
-
-**No se escribe nada a mano.** `Lemoria: modelo` encadena tres diálogos de
-selección —agente, modelo, esfuerzo— y el resto también elige de una lista.
-Solo se navega y se confirma.
-
-Lo que hace por detrás `Lemoria: modelo`:
-
-- Escribe el pin con `lemoria agent model` en el directorio de agentes que dejó
-  configurado el instalador (`config.json`, junto al plugin). Tus repos
-  propios no se ensucian.
-- Recarga OpenCode y refleja el modelo en la sesión que estás viendo, así el
-  texto al lado del prompt actualiza en el momento.
-- Solo ofrece los modelos que OpenCode reporta como **habilitados** para tu
-  cuenta, y las opciones de esfuerzo salen de las **variantes reales** de ese
-  modelo. No hay una lista fija escrita en el plugin.
-
-Para quitar Lemoria, `Lemoria: desinstalar` en el mismo menú. Elegís entre
-dejar solo las integraciones de OpenCode o borrar también CLI, DB local y
-vault; el plugin se desregistra de `cli.json` solo. La parte de Omarchy se va
-con `lemoria omarchy uninstall`, que el propio menú dispara. Después hay que
-**reiniciar OpenCode**.
-
-Si el menú no aparece, verificá que el plugin siga en la lista `plugins` de
-`~/.config/opencode/cli.json`:
-
-```bash
-cat ~/.config/opencode/cli.json
-```
+El flujo es **100 % agente-driven**: el orquestador corre los comandos de Lemoria por vos. La única configuración que sí te toca es el modelo y esfuerzo de los subagentes, con `lemoria agent model` (ver [Fijar el modelo de un agente](#fijar-el-modelo-de-un-agente-opcional)).
 
 ## Instalación paso a paso (sin el script)
 
@@ -376,22 +335,11 @@ export PATH="$PATH:$HOME/.local/bin"
 # 5. Inicializar DB
 lemoria init
 
-# 6. Copiar agentes, skills y slash commands a global
-mkdir -p ~/.config/opencode/{agents,commands,plugins/lemoria-menu,skills/lemoria}
+# 6. Copiar agentes y skills a global
+mkdir -p ~/.config/opencode/{agents,skills/lemoria}
 cp .opencode/agents/*.md ~/.config/opencode/agents/
-cp .opencode/commands/*.md ~/.config/opencode/commands/
 cp .opencode/skills/lemoria/SKILL.md ~/.config/opencode/skills/lemoria/
 cp -r .opencode/skills/{frontend,backend,database,testing,code-review,git-workflow,documentation} ~/.config/opencode/skills/
-cp opencode/plugins/lemoria-menu/tui.js ~/.config/opencode/plugins/lemoria-menu/
-python3 - <<'PYCFG'
-import json, pathlib
-path = pathlib.Path.home() / ".config/opencode/cli.json"
-plugin = str(pathlib.Path.home() / ".config/opencode/plugins/lemoria-menu")
-data = json.loads(path.read_text()) if path.exists() else {"$schema": "https://opencode.ai/v2/cli.json"}
-plugins = data.get("plugins") if isinstance(data.get("plugins"), list) else []
-data["plugins"] = [entry for entry in plugins if entry != plugin] + [plugin]
-path.write_text(json.dumps(data, indent=2) + "\n")
-PYCFG
 
 # 7. Crear config global
 cat > ~/.config/opencode/opencode.json <<- 'EOF'
@@ -415,6 +363,9 @@ del sistema. Si elegiste nativo en el paso 3, no necesitás el `docker` de este
 repo en ningún momento.
 
 ## Comandos básicos (funcionan desde cualquier lado)
+
+El orquestador ejecuta estos comandos por vos; quedan documentados para
+diagnóstico y automatización:
 
 ```bash
 lemoria project create "mi-api" -d "API REST"
@@ -522,14 +473,46 @@ encuentra el estado roto.
 
 ## Fijar el modelo de un agente (opcional)
 
-Por defecto los agentes **heredan** el modelo de quien los invoca, y podés
-cambiarlo cuando quieras:
+El orquestador usa el modelo de la sesión: se elige dentro de OpenCode con
+`/models` y `/variants`, y Lemoria no lo escribe en ningún archivo. Los
+subagentes, en cambio, se pinean por CLI. Por defecto **heredan** el modelo de
+quien los invoca, y podés cambiarlo por agente cuando quieras:
 
 ```bash
-lemoria agent model                                        # ver los modelos
-lemoria agent model implementation-agent <modelo> -v high   # fijar modelo y effort
-lemoria agent model implementation-agent --clear           # volver a heredar
+lemoria agent status                                            # estado y modelo efectivo
+lemoria agent model                                             # ver los modelos
+lemoria agent model implementation-agent <modelo> --effort high # fijar modelo y esfuerzo
+lemoria agent model implementation-agent --clear                # volver a heredar
 ```
+
+El comando escribe `model: provider/model#variant` en el `.md` del agente. Un
+agente sin `model` en su frontmatter hereda el modelo de la sesión del
+orquestador.
+
+## Desinstalar Lemoria
+
+No hay un comando único de desinstalación; se deshace en este orden:
+
+```bash
+lemoria omarchy uninstall                       # si instalaste el panel (opcional)
+rm -f ~/.config/opencode/agents/*.md            # agentes globales
+rm -rf ~/.config/opencode/skills/{lemoria,frontend,backend,database,testing,code-review,git-workflow,documentation}
+
+# Artefactos del menú anterior (el instalador ya los limpia; esto es manual)
+rm -rf ~/.config/opencode/plugins/lemoria-menu
+rm -f ~/.config/opencode/commands/lemoria.md
+rmdir ~/.config/opencode/commands 2>/dev/null || true   # solo si quedó vacío
+# quitá la entrada lemoria-menu de ~/.config/opencode/cli.json
+# opcional: borrá los respaldos .bak del instalador
+rm -f ~/.config/opencode/cli.json.bak ~/.config/opencode/opencode.json.bak
+
+# editá ~/.config/opencode/opencode.json y quitá default_agent/skills
+uv tool uninstall lemoria                       # o borrá el venv y el symlink de ~/.local/bin/lemoria
+```
+
+La base local y el vault son datos tuyos: si querés borrarlos también, hacé
+backup antes (`pg_dump lemoria` y una copia de `~/.lemoria/vault`). Después hay
+que **reiniciar OpenCode**.
 
 ## Notas
 

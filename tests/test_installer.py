@@ -23,14 +23,81 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIB = REPO_ROOT / "installer" / "lib.sh"
 INSTALLER = REPO_ROOT / "install.sh"
+LOCAL_CONFIG = REPO_ROOT / "opencode.jsonc"
 BASH = shutil.which("bash")
+
+
+# `install.sh` legitimately contains "/lemoria" inside paths such as
+# `~/.local/share/lemoria/venv`, so a plain substring check would flag it for
+# something unrelated. This matches the old slash command as a standalone token.
+SLASH_COMMAND = re.compile(r"(?<![\w./~-])/lemoria\b")
+
+
+def references_slash_command(text: str) -> bool:
+    """True when `text` mentions the removed `/lemoria` slash command."""
+    return SLASH_COMMAND.search(text) is not None
+
+
+def strip_jsonc_comments(text: str) -> str:
+    """Remove `//` and `/* */` comments without touching string contents.
+
+    A naive regex would cut `https://opencode.ai/config.json` in half, which is
+    exactly the schema URL the config carries.
+    """
+    result = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            result.append(char)
+            index += 1
+            continue
+        if char == "/" and index + 1 < len(text):
+            following = text[index + 1]
+            if following == "/":
+                index += 2
+                while index < len(text) and text[index] != "\n":
+                    index += 1
+                continue
+            if following == "*":
+                index += 2
+                while index + 1 < len(text) and not (
+                    text[index] == "*" and text[index + 1] == "/"
+                ):
+                    index += 1
+                index += 2
+                continue
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
+def load_jsonc(text: str) -> dict:
+    """Parse the JSON-with-comments dialect opencode.jsonc uses."""
+    without_comments = strip_jsonc_comments(text)
+    without_trailing_commas = re.sub(r",(\s*[}\]])", r"\1", without_comments)
+    return json.loads(without_trailing_commas)
+
 
 # The only real programs a test can see. `docker`/`uv`/`psql`/`python3` are not
 # on this list on purpose: a test that wants one puts a fake there.
 # `dirname` is there because install.sh uses it to find its own directory.
 COREUTILS = (
     "cat", "chmod", "cp", "dirname", "grep", "head", "ln",
-    "mkdir", "rm", "sed", "seq", "sleep", "tail",
+    "mkdir", "rm", "rmdir", "sed", "seq", "sleep", "tail",
 )
 
 
@@ -249,6 +316,18 @@ def fake_python3(sandbox, *, venv_rc=0, user_install_rc=0, system_install_rc=0):
         FAKE_PIP_SYSTEM=system_install_rc,
         FAKE_PIP_IN_VENV=0,
     )
+
+
+def real_python3(sandbox):
+    """Put the real interpreter on the sandbox PATH.
+
+    The OpenCode config helpers parse JSON with `python3`; a fake that only
+    answers `--version` would make them fail for the wrong reason.
+    """
+    real = shutil.which("python3")
+    assert real, "python3 is required to exercise the OpenCode config helpers"
+    (sandbox.bin / "python3").unlink(missing_ok=True)
+    (sandbox.bin / "python3").symlink_to(real)
 
 
 def fake_distro(sandbox, *tools):
@@ -724,89 +803,278 @@ class TestPostgresSetupGuide:
         assert "5544" in out
 
 
-class TestOpenCodeCommandInstallContract:
-    def test_global_install_copies_slash_commands(self):
-        text = INSTALLER.read_text()
-        assert 'mkdir -p "$OPENCODE_GLOBAL_DIR/commands"' in text
-        assert 'cp .opencode/commands/*.md "$OPENCODE_GLOBAL_DIR/commands/"' in text
-        assert "Usa /lemoria" in text
+class TestCleanupLegacyOpenCodeUI:
+    """An upgrade must remove 0.3.0's Ctrl+P menu and slash command.
 
-    def test_project_summary_mentions_slash_command_location(self):
-        text = INSTALLER.read_text()
-        assert "comandos en .opencode/commands/" in text
-        assert "usa /lemoria" in text
+    Only Lemoria's own entries may disappear: the user's plugins, commands and
+    the rest of their cli.json stay exactly as they were.
+    """
 
+    def _legacy_dir(self, sandbox, *, cli_json: str | None = None) -> Path:
+        opencode = sandbox.root / "opencode"
+        plugin = opencode / "plugins" / "lemoria-menu"
+        plugin.mkdir(parents=True)
+        (plugin / "tui.js").write_text("export default { id: 'lemoria.menu' }\n")
+        commands = opencode / "commands"
+        commands.mkdir()
+        (commands / "lemoria.md").write_text("# lemoria\n")
+        (commands / "keep.md").write_text("# keep\n")
+        if cli_json is None:
+            cli_json = (
+                json.dumps(
+                    {
+                        "$schema": "https://opencode.ai/v2/cli.json",
+                        "plugins": ["/tmp/other", str(plugin)],
+                        "theme": {"name": "dark"},
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+        (opencode / "cli.json").write_text(cli_json)
+        return opencode
 
-class TestOpenCodeLemoriaMenuPlugin:
-    def test_plugin_source_is_versioned(self):
-        plugin = REPO_ROOT / "opencode" / "plugins" / "lemoria-menu" / "tui.js"
-        assert plugin.exists()
-        text = plugin.read_text()
-        assert 'id: "lemoria.menu"' in text
-        assert "lemoria.agent.set_model" in text
+    def test_removes_the_legacy_ui_and_preserves_user_configuration(self, sandbox):
+        real_python3(sandbox)
+        opencode = self._legacy_dir(sandbox)
+        original = (opencode / "cli.json").read_text()
 
-    def test_menu_install_preserves_existing_plugins_and_is_idempotent(self, sandbox):
-        (sandbox.bin / "python3").unlink(missing_ok=True)
-        (sandbox.bin / "python3").symlink_to(shutil.which("python3"))
-        repo = sandbox.workdir
-        source = repo / "opencode" / "plugins" / "lemoria-menu"
-        source.mkdir(parents=True)
-        (source / "tui.js").write_text("export default { id: 'lemoria.menu' }\n")
-        opencode_dir = sandbox.home / ".config" / "opencode"
-        opencode_dir.mkdir(parents=True)
-        (opencode_dir / "cli.json").write_text('{"plugins":["/tmp/other"]}\n')
+        sandbox.run(f'cleanup_legacy_opencode_ui "{opencode}"')
 
-        body = """
-        install_opencode_lemoria_menu "$LEMORIA_DIR" "$HOME/.config/opencode" "$HOME/.config/opencode/agents"
-        install_opencode_lemoria_menu "$LEMORIA_DIR" "$HOME/.config/opencode" "$HOME/.config/opencode/agents"
-        cat "$HOME/.config/opencode/cli.json"
+        assert not (opencode / "plugins" / "lemoria-menu").exists()
+        assert not (opencode / "commands" / "lemoria.md").exists()
+        assert (opencode / "commands" / "keep.md").exists()
+        assert (opencode / "commands").is_dir(), "other commands keep the directory alive"
+        config = json.loads((opencode / "cli.json").read_text())
+        assert config["plugins"] == ["/tmp/other"]
+        assert config["theme"] == {"name": "dark"}
+        assert config["$schema"] == "https://opencode.ai/v2/cli.json"
+        assert (opencode / "cli.json.bak").read_text() == original
+
+    def test_invalid_cli_json_keeps_legacy_artifacts_to_avoid_dangling_registration(self, sandbox):
+        """If cli.json cannot be cleaned, removing the files would leave it
+        pointing at a plugin that no longer exists. Keep both until it can.
         """
-        out = sandbox.run(body)
+        real_python3(sandbox)
+        invalid = "{not json"
+        opencode = self._legacy_dir(sandbox, cli_json=invalid)
 
-        assert (opencode_dir / "plugins" / "lemoria-menu" / "tui.js").read_text().startswith("export default")
-        assert out.count(str(opencode_dir / "plugins" / "lemoria-menu")) == 1
-        assert '"/tmp/other"' in out
+        out = sandbox.run(f'cleanup_legacy_opencode_ui "{opencode}"')
 
-    def test_menu_config_records_repo_and_agents_dir(self, sandbox):
-        """El plugin necesita saber dónde escribir el pin del modelo."""
-        (sandbox.bin / "python3").unlink(missing_ok=True)
-        (sandbox.bin / "python3").symlink_to(shutil.which("python3"))
-        repo = sandbox.workdir
-        source = repo / "opencode" / "plugins" / "lemoria-menu"
-        source.mkdir(parents=True)
-        (source / "tui.js").write_text("export default { id: 'lemoria.menu' }\n")
-
-        sandbox.run(
-            'install_opencode_lemoria_menu "$LEMORIA_DIR" "$HOME/.config/opencode" "$HOME/.config/opencode/agents"'
+        assert (opencode / "plugins" / "lemoria-menu" / "tui.js").exists(), (
+            "a dangling cli.json registration would outlive the plugin directory"
         )
+        assert (opencode / "commands" / "lemoria.md").exists()
+        assert (opencode / "cli.json").read_text() == invalid
+        assert (opencode / "cli.json.bak").read_text() == invalid
+        assert "no es JSON válido" in out
+        assert "No se quitan el plugin ni el comando" in out
 
-        config = json.loads(
-            (sandbox.home / ".config/opencode/plugins/lemoria-menu/config.json").read_text()
-        )
-        assert config["repo"] == str(repo)
-        assert config["agentsDir"] == str(sandbox.home / ".config/opencode/agents")
+    def test_only_lemoria_command_leaves_the_commands_directory_empty(self, sandbox):
+        real_python3(sandbox)
+        opencode = sandbox.root / "opencode"
+        commands = opencode / "commands"
+        commands.mkdir(parents=True)
+        (commands / "lemoria.md").write_text("# lemoria\n")
 
-    def test_plugin_reads_its_own_config_instead_of_hardcoded_paths(self):
-        """Nada de ~/Projects/lemoria: el repo puede estar donde sea."""
-        text = (REPO_ROOT / "opencode" / "plugins" / "lemoria-menu" / "tui.js").read_text()
-        assert 'join(HOME, "Projects", "lemoria")' not in text
-        assert "config.json" in text
-        assert "LEMORIA_OPENCODE_AGENTS_DIR" in text
+        sandbox.run(f'cleanup_legacy_opencode_ui "{opencode}"')
 
-    def test_plugin_does_not_pin_models_inside_the_repo(self):
-        """El pin lo escribe el CLI en un solo directorio: el git del usuario queda limpio."""
-        text = (REPO_ROOT / "opencode" / "plugins" / "lemoria-menu" / "tui.js").read_text()
-        assert "mirrorGlobalAgentPin" not in text
-        assert "writeModelToAgentFile" not in text
-        # Solo el slash command /lemoria y el cli.json se editan a mano.
-        assert len(re.findall(r"writeFileSyncSafe\(", text)) == 3  # 1 definición + 2 usos
-        assert len(re.findall(r"writeFileSync\(", text)) == 1  # dentro del helper
+        assert not (commands / "lemoria.md").exists()
+        assert not commands.exists(), "an empty commands directory must not be left behind"
 
-    def test_install_script_enables_the_ctrl_p_menu(self):
+    def test_cli_json_with_non_list_plugins_removes_artifacts_without_backup(self, sandbox):
+        real_python3(sandbox)
+        original = json.dumps({"plugins": "oops", "theme": {"name": "dark"}}, indent=2) + "\n"
+        opencode = self._legacy_dir(sandbox, cli_json=original)
+
+        sandbox.run(f'cleanup_legacy_opencode_ui "{opencode}"')
+
+        assert not (opencode / "plugins" / "lemoria-menu").exists()
+        assert not (opencode / "commands" / "lemoria.md").exists()
+        assert (opencode / "cli.json").read_text() == original
+        assert not (opencode / "cli.json.bak").exists()
+
+    def test_second_run_is_idempotent_and_does_not_churn_backups(self, sandbox):
+        real_python3(sandbox)
+        opencode = self._legacy_dir(sandbox)
+        sandbox.run(f'cleanup_legacy_opencode_ui "{opencode}"')
+        cli = opencode / "cli.json"
+        backup = opencode / "cli.json.bak"
+        first_cli = (cli.read_text(), cli.stat().st_ino, cli.stat().st_mtime_ns)
+        first_backup = (backup.read_text(), backup.stat().st_ino, backup.stat().st_mtime_ns)
+
+        out = sandbox.run(f'cleanup_legacy_opencode_ui "{opencode}"')
+
+        assert out == "", "a clean directory must not produce noise"
+        assert (cli.read_text(), cli.stat().st_ino, cli.stat().st_mtime_ns) == first_cli
+        assert (
+            backup.read_text(), backup.stat().st_ino, backup.stat().st_mtime_ns
+        ) == first_backup, "the second run must not overwrite the backup"
+
+    def test_invalid_cli_json_is_left_byte_identical_with_a_backup(self, sandbox):
+        real_python3(sandbox)
+        opencode = sandbox.root / "opencode"
+        opencode.mkdir()
+        invalid = '{"plugins": ['
+        (opencode / "cli.json").write_text(invalid)
+
+        out = sandbox.run(f'cleanup_legacy_opencode_ui "{opencode}"')
+
+        assert (opencode / "cli.json").read_text() == invalid
+        assert (opencode / "cli.json.bak").read_text() == invalid
+        assert "no es JSON válido" in out
+
+    def test_an_empty_directory_is_silent_and_creates_nothing(self, sandbox):
+        real_python3(sandbox)
+        opencode = sandbox.root / "opencode"
+        opencode.mkdir()
+
+        out = sandbox.run(f'cleanup_legacy_opencode_ui "{opencode}"')
+
+        assert out == ""
+        assert list(opencode.iterdir()) == []
+
+
+class TestEnsureGlobalDefaultAgent:
+    """The global config gains our default agent without losing user settings."""
+
+    def _config_path(self, sandbox) -> Path:
+        opencode = sandbox.root / "opencode"
+        opencode.mkdir(exist_ok=True)
+        return opencode / "opencode.json"
+
+    def test_creates_the_config_when_it_does_not_exist(self, sandbox):
+        opencode = sandbox.root / "opencode"
+        opencode.mkdir()
+
+        out = sandbox.run(f'ensure_global_default_agent "{opencode}"')
+
+        config = json.loads((opencode / "opencode.json").read_text())
+        assert config == {
+            "$schema": "https://opencode.ai/config.json",
+            "default_agent": "orchestrator",
+            "skills": ["~/.config/opencode/skills"],
+        }
+        assert "Config global creada" in out
+        assert not (opencode / "opencode.json.bak").exists()
+
+    def test_creates_the_config_and_missing_parent_directories(self, sandbox):
+        opencode = sandbox.root / "deeply" / "nested" / "opencode"
+
+        out = sandbox.run(f'ensure_global_default_agent "{opencode}"')
+
+        assert opencode.is_dir()
+        config = json.loads((opencode / "opencode.json").read_text())
+        assert config["default_agent"] == "orchestrator"
+        assert "Config global creada" in out
+
+    def test_adds_the_default_agent_without_losing_other_keys(self, sandbox):
+        real_python3(sandbox)
+        path = self._config_path(sandbox)
+        original = {
+            "$schema": "https://opencode.ai/config.json",
+            "theme": "dark",
+            "skills": ["/custom/skills"],
+        }
+        original_text = json.dumps(original, indent=2) + "\n"
+        path.write_text(original_text)
+
+        out = sandbox.run(f'ensure_global_default_agent "{path.parent}"')
+
+        config = json.loads(path.read_text())
+        assert config["default_agent"] == "orchestrator"
+        assert config["theme"] == "dark"
+        assert config["skills"] == ["/custom/skills"]
+        assert config["$schema"] == "https://opencode.ai/config.json"
+        assert (path.parent / "opencode.json.bak").read_text() == original_text
+        assert "se agregó" in out
+
+    def test_respects_a_different_default_agent_and_reports_it(self, sandbox):
+        real_python3(sandbox)
+        path = self._config_path(sandbox)
+        original_text = json.dumps({"default_agent": "build", "theme": "dark"}, indent=2) + "\n"
+        path.write_text(original_text)
+
+        out = sandbox.run(f'ensure_global_default_agent "{path.parent}"')
+
+        assert path.read_text() == original_text, "the user's choice wins"
+        assert not (path.parent / "opencode.json.bak").exists()
+        assert "build" in out
+        assert "se respeta" in out
+
+    def test_orchestrator_already_present_is_a_noop(self, sandbox):
+        real_python3(sandbox)
+        path = self._config_path(sandbox)
+        original_text = json.dumps(
+            {"default_agent": "orchestrator", "theme": "dark"}, indent=2
+        ) + "\n"
+        path.write_text(original_text)
+        before = (path.stat().st_ino, path.stat().st_mtime_ns)
+
+        out = sandbox.run(f'ensure_global_default_agent "{path.parent}"')
+
+        assert path.read_text() == original_text
+        assert (path.stat().st_ino, path.stat().st_mtime_ns) == before
+        assert not (path.parent / "opencode.json.bak").exists()
+        assert "ya era" in out
+
+    def test_invalid_json_is_reported_and_left_untouched(self, sandbox):
+        real_python3(sandbox)
+        path = self._config_path(sandbox)
+        invalid = '{"default_agent": '
+        path.write_text(invalid)
+
+        out = sandbox.run(f'ensure_global_default_agent "{path.parent}"')
+
+        assert path.read_text() == invalid
+        assert "no es JSON válido" in out
+
+
+class TestOpenCodeCommandInstallContract:
+    """The installer installs agents and skills, not a slash command or menu.
+
+    Cleanup helpers live in installer/lib.sh, so these checks target install
+    actions rather than the bare appearance of a word.
+    """
+
+    def test_installer_does_not_install_slash_commands(self):
         text = INSTALLER.read_text()
-        assert 'install_opencode_lemoria_menu "$LEMORIA_DIR" "$OPENCODE_GLOBAL_DIR" "$OPENCODE_GLOBAL_DIR/agents"' in text
-        assert 'install_opencode_lemoria_menu "$LEMORIA_DIR" "$OPENCODE_GLOBAL_DIR" "$LEMORIA_DIR/.opencode/agents"' in text
-        assert "Plugin habilitado" in text
+        assert "cp .opencode/commands" not in text
+        assert 'mkdir -p "$OPENCODE_GLOBAL_DIR/commands"' not in text
+        assert not references_slash_command(text)
+
+    def test_installer_does_not_install_the_removed_menu_plugin(self):
+        text = INSTALLER.read_text()
+        assert "install_opencode_lemoria_menu" not in text
+        assert "opencode/plugins/lemoria-menu" not in text
+        assert "Plugin habilitado" not in text
+
+    def test_installer_still_copies_agents_and_skills(self):
+        text = INSTALLER.read_text()
+        assert 'cp .opencode/agents/*.md "$OPENCODE_GLOBAL_DIR/agents/"' in text
+        assert 'cp ".opencode/skills/$skill_dir/SKILL.md"' in text
+
+
+class TestRemovedMenuAndSlashCommand:
+    """Regression coverage: the Ctrl+P menu and the slash command are gone.
+
+    Neither the repository nor the installer may quietly bring them back.
+    """
+
+    def test_menu_plugin_source_does_not_exist(self):
+        assert not (REPO_ROOT / "opencode" / "plugins" / "lemoria-menu").exists()
+
+    def test_local_config_has_no_commands_key(self):
+        config = load_jsonc(LOCAL_CONFIG.read_text())
+        assert "commands" not in config
+
+    def test_slash_command_directory_does_not_exist(self):
+        commands = REPO_ROOT / ".opencode" / "commands"
+        assert not (commands / "lemoria.md").exists()
+        assert not commands.exists()
+
+    def test_library_does_not_define_the_removed_menu_function(self):
+        assert "install_opencode_lemoria_menu" not in LIB.read_text()
 
 
 class TestLibraryContract:
@@ -819,14 +1087,15 @@ class TestLibraryContract:
 
     ENTRY_POINTS = (
         "choose_installer",
+        "cleanup_legacy_opencode_ui",
         "detect_docker",
         "detect_postgres",
+        "ensure_global_default_agent",
         "env_value",
         "pkg_hint",
         "print_db_stop_hint",
         "print_postgres_setup_guide",
         "provide_postgres",
-        "install_opencode_lemoria_menu",
         "resolve_db_port",
         "uv_install_hint",
     )

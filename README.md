@@ -12,7 +12,7 @@
     <a href="https://img.shields.io/github/last-commit/devcristianlopez/lemoria" target="_blank"><img src="https://img.shields.io/github/last-commit/devcristianlopez/lemoria?style=flat-square" alt="Last Commit" /></a>
     <a href="https://img.shields.io/github/repo-size/devcristianlopez/lemoria" target="_blank"><img src="https://img.shields.io/github/repo-size/devcristianlopez/lemoria?style=flat-square" alt="Repo Size" /></a>
     <a href="https://img.shields.io/github/actions/workflow/status/devcristianlopez/lemoria/ci.yml?style=flat-square&logo=githubactions" target="_blank"><img src="https://img.shields.io/github/actions/workflow/status/devcristianlopez/lemoria/ci.yml?style=flat-square&logo=githubactions" alt="CI" /></a>
-    <a href="https://img.shields.io/badge/tests-228-brightgreen?style=flat-square&label=tests" target="_blank"><img src="https://img.shields.io/badge/tests-228-brightgreen?style=flat-square&label=tests" alt="Tests" /></a>
+    <a href="https://img.shields.io/badge/tests-252-brightgreen?style=flat-square&label=tests" target="_blank"><img src="https://img.shields.io/badge/tests-252-brightgreen?style=flat-square&label=tests" alt="Tests" /></a>
   </p>
 </p>
 
@@ -28,7 +28,7 @@ Instálalo **una sola vez** y todos tus proyectos —limpios, separados, sin con
 
 - 🎯 **SDD Flow completo** — 15 pasos: discovery → idea → spec → PRD → tasks → architecture → implementation → testing → review → commit → push → documentation → memory update
 - 🤖 **8 agentes OpenCode** — Un orquestador que delega automáticamente a agentes especializados (implementation, frontend, DB, testing, GitHub, review, documentation)
-- 🧭 **Gestión de agentes** — Los subagentes viven en la DB, y su modelo se ve y se cambia por agente (`lemoria agent sync|model|status`)
+- 🧭 **Gestión de agentes** — El `.md` de cada subagente es la fuente de verdad y la DB es un espejo; el modelo se ve y se cambia por agente (`lemoria agent sync|model|status`)
 - 📊 **Telemetría de opencode** — Sesiones, tokens y costo por agente, con widget propio de Omarchy aislado de Codex/Claude/Fireworks
 - 🗃️ **Trazabilidad total** — Cada proyecto, PRD, tarea, decisión y flow step se persiste en PostgreSQL con relaciones y metadatos
 - 🐘 **PostgreSQL nativo o en Docker** — Usa el servidor que ya tengas andando; Docker es la alternativa, no el requisito
@@ -37,7 +37,7 @@ Instálalo **una sola vez** y todos tus proyectos —limpios, separados, sin con
 - 📚 **Obsidian vault** — Sincronización bidireccional opcional: exporta a markdown y restaura la DB desde el vault (memoria privada, guardada fuera de repos git).
 - 📋 **Decisiones registradas** — Cada cambio importante queda documentado como ADR antes de implementar
 - 🔄 **State machine** — Cada paso del flujo se registra en `flow_steps`, permitiendo retomar sesiones tras pérdida de contexto
-- 🧪 **228 tests automatizados** — pytest con SQLite in-memory, CI en GitHub Actions (Python 3.11/3.12/3.13)
+- 🧪 **252 tests automatizados** — pytest con SQLite in-memory, CI en GitHub Actions (Python 3.11/3.12/3.13)
 - 🏷️ **8 enums tipados** — Todos los status con `CheckConstraint` en DB para integridad a nivel de base de datos
 - 📡 **Context7 MCP** — Documentación en tiempo real de librerías y frameworks vía MCP server
 
@@ -68,7 +68,7 @@ Python 3.14 sin pelear con PEP 668. Si venís de otra distro y querés el detall
 [`INSTALL.md`](INSTALL.md) explica por qué `pip install` falla ahí y cómo
 desbloquearlo sin romper el sistema.
 
-Comandos esenciales:
+Comandos esenciales (los ejecuta el orquestador; quedan para diagnóstico y automatización):
 
 ```bash
 lemoria project list               # Lista todos tus proyectos
@@ -204,17 +204,16 @@ Lemoria incluye **8 agentes** en inglés, sin dependencia de lenguaje/framework.
 | 🐙 **GitHub Agent** | `subagent` | Trazabilidad GitHub: commits, PRs, issues |
 | 📝 **Documentation Agent** | `subagent` | Documentación técnica y sincronización con vault |
 
-Los agentes, skills y comandos se copian tanto a nivel proyecto (`.opencode/`) como global (`~/.config/opencode/`), y están disponibles en cualquier proyecto sin configuración adicional. En OpenCode v2 los comandos se invocan como slash commands, por ejemplo:
+Los agentes y skills se copian tanto a nivel proyecto (`.opencode/`) como global (`~/.config/opencode/`), y están disponibles en cualquier proyecto sin configuración adicional. El instalador agrega `default_agent: orchestrator` a la configuración global si falta; si ya hay otro valor, lo respeta y avisa. Con el orquestador como default, **abrir OpenCode en cualquier proyecto arranca el orquestador**: describile la feature en lenguaje natural y él se encarga del resto.
 
 ```text
-/lemoria quiero implementar autenticación con JWT
+Tú: "Quiero implementar autenticación con JWT"
+→ Orchestrator registra proyecto, conversación y PRD
+→ Delega en implementation-agent, testing-agent, review-agent…
+→ Cada paso queda trazado en PostgreSQL
 ```
 
-Nota: en configuración JSON/JSONC de OpenCode v2 la clave correcta es `commands` en plural. La clave/directorio singular `command` es legacy y no se usa para nuevas instalaciones.
-
-### Menú Ctrl+P de Lemoria
-
-Además del slash command, el instalador deja un plugin del TUI que agrega un grupo **Lemoria** a la paleta de comandos de **Ctrl+P**: estado de los agentes, fijar o limpiar modelo y esfuerzo, `sync` y desinstalación. Todo se elige con diálogos de selección —no hay que escribir nada— y solo se ofrecen los modelos que OpenCode habilita para tu cuenta. Los detalles están en [INSTALL.md](INSTALL.md#menú-ctrlp-de-lemoria).
+No hay slash command ni menú que aprender: el flujo es **100 % agente-driven**. El orquestador ejecuta los comandos de Lemoria por vos; la única configuración humana es el modelo y esfuerzo de los subagentes, que se hace por CLI (ver [Configurar subagentes](#configurar-subagentes)).
 
 ### Configuración: `opencode.json` vs `opencode.jsonc`
 
@@ -222,14 +221,14 @@ Lemoria usa dos archivos de configuración de OpenCode, cada uno con un propósi
 
 | Archivo | Ubicación | Función | Comentarios |
 |---------|-----------|---------|-------------|
-| `opencode.jsonc` | `~/Projects/lemoria/` (en el repo) | Configuración del proyecto Lemoria: agente default, skills y comandos personalizados | ✅ Soporta `//` y `/* */` |
-| `opencode.json` | `~/.config/opencode/` (global) | Configuración global del usuario: **personalidad de la AI**, idioma de interacción, MCP servers | ❌ JSON puro, sin comentarios |
+| `opencode.jsonc` | `~/Projects/lemoria/` (en el repo) | Configuración del proyecto Lemoria: agente default y skills | ✅ Soporta `//` y `/* */` |
+| `opencode.json` | `~/.config/opencode/` (global) | Configuración global del usuario: **agente default**, personalidad de la AI, idioma de interacción, MCP servers | ❌ JSON puro, sin comentarios |
 
 **¿Cuál es la diferencia?**
 
 - **`opencode.jsonc`** está en el repo y define cosas del proyecto Lemoria (qué agente se carga por defecto, dónde buscar skills). Usa la extensión `.jsonc` porque así podemos dejar comentarios en el archivo sin que OpenCode proteste.
 
-- **`opencode.json`** lo configura cada usuario en su home y es donde se define **el idioma y tono de la AI**. Si quieres que la AI te hable en español, inglés, o en cualquier otro estilo, es ahí donde se configura.
+- **`opencode.json`** lo configura cada usuario en su home y es donde se define **el idioma y tono de la AI**. El instalador lo crea si falta (con `default_agent: orchestrator` y la ruta de skills); si ya existe, agrega `default_agent` solo cuando falta y conserva el resto de tus claves. Con el orquestador como default, cualquier proyecto arranca con él. Si quieres que la AI te hable en español, inglés, o en cualquier otro estilo, es ahí donde se configura.
 
 **¿Por qué importa?**
 
@@ -266,7 +265,7 @@ Fijarlo es una línea en su frontmatter, y se hace con un comando:
 
 ```bash
 lemoria agent model review-agent anthropic/claude-sonnet-4-5   # fija modelo
-lemoria agent model review-agent anthropic/claude-sonnet-4-5 --variant high
+lemoria agent model review-agent anthropic/claude-sonnet-4-5 --effort high
 lemoria agent model review-agent          # sin argumentos: muestra el actual
 ```
 
@@ -285,13 +284,27 @@ El comando **edita el `.md`**, no la DB. El markdown es la fuente de verdad y la
 | `lemoria agent sync [--dry-run] [--dir PATH]` | Refleja `.opencode/agents/*.md` en la tabla `agents` |
 | `lemoria agent list` | Agentes registrados |
 | `lemoria agent status [--json]` | Modelo efectivo, sesiones, sesiones vivas y tokens **por agente** |
-| `lemoria agent model <name> [model] [--variant V]` | Fija o muestra el modelo de un agente |
+| `lemoria agent model <name> [model] [--effort E]` | Fija o muestra el modelo (y effort) de un agente; `--clear` lo devuelve a heredar |
 
 `--dry-run` informa qué cambiaría sin escribir nada. La ruta de los `.md` sale de `LEMORIA_OPENCODE_AGENTS_DIR` (default `./.opencode/agents`).
 
+### Configurar subagentes
+
+El orquestador no se configura desde Lemoria: su modelo y esfuerzo son de sesión y se eligen en OpenCode con `/models` y `/variants`. Los subagentes sí se pinean por CLI, y `lemoria agent model` escribe `model: provider/model#variant` en el `.md` correspondiente:
+
+```bash
+lemoria agent status
+lemoria agent model implementation-agent openai/gpt-5.6-sol --effort high
+lemoria agent model review-agent openai/gpt-5.6-luna --effort high
+lemoria agent model testing-agent deepseek/deepseek-flash
+lemoria agent model db-agent --clear
+```
+
+`--clear` quita el pin y devuelve el agente a la herencia: vuelve a usar el modelo de la sesión del orquestador. Lo mismo vale para cualquier agente sin `model` en su frontmatter — **los agentes sin pinear heredan el modelo del orquestador**.
+
 ### Ver quién está corriendo y cuánto consumió
 
-`lemoria agent status` es el desglose por subagente que el panel **no** tiene:
+`lemoria agent status` es el desglose por subagente que el panel **no** tiene. Ejemplo de salida (el modelo depende de la sesión):
 
 ```console
 $ lemoria agent status
@@ -423,12 +436,11 @@ lemoria/
 │   └── SDD.md
 ├── .opencode/
 │   ├── agents/               # Definiciones de los 8 agentes
-│   ├── commands/             # Slash commands de OpenCode, como /lemoria
-│   └── skills/               # 7 skills Lemoria (frontend, backend, database, etc.)
-├── tests/                    # 228 tests (pytest, SQLite in-memory)
+│   └── skills/               # 8 skills Lemoria (lemoria, frontend, backend, database, etc.)
+├── tests/                    # 252 tests (pytest, SQLite in-memory)
 │   ├── conftest.py
-│   ├── test_agents.py        # 88 tests — modelos, pin/unpin, telemetría por agente
-│   ├── test_installer.py     # 71 tests — decisiones de installer/lib.sh en un PATH falso
+│   ├── test_agents.py        # 94 tests — modelos, pin/unpin, telemetría por agente
+│   ├── test_installer.py     # 89 tests — decisiones de installer/lib.sh en un PATH falso
 │   ├── test_vault.py         # 20 tests
 │   ├── test_cli.py           # 17 tests
 │   ├── test_flow.py          # 17 tests
@@ -464,10 +476,10 @@ lemoria/
 | **Git** | [GitPython](https://gitpython.readthedocs.io/) |
 | **Terminal UI** | [Rich](https://rich.readthedocs.io/) |
 | **Agentes** | [OpenCode](https://opencode.ai) (8 agentes) |
-| **Skills** | 7 skills modulares (frontend, backend, database, testing, code-review, git-workflow, documentation) |
+| **Skills** | 8 skills modulares (lemoria, frontend, backend, database, testing, code-review, git-workflow, documentation) |
 | **Documentación en tiempo real** | [Context7 MCP](https://context7.com) |
 | **Vault** | [Obsidian](https://obsidian.md/) (bidireccional) |
-| **Testing** | [pytest](https://pytest.org/) — 228 tests |
+| **Testing** | [pytest](https://pytest.org/) — 252 tests |
 | **Linting** | [Ruff](https://docs.astral.sh/ruff/) |
 | **CI/CD** | [GitHub Actions](https://github.com/features/actions) (matrix 3.11/3.12/3.13) |
 

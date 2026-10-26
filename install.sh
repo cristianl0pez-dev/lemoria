@@ -172,10 +172,12 @@ OPENCODE_GLOBAL_DIR="$HOME/.config/opencode"
 if [ "$INSTALL_MODE" = "1" ]; then
     echo "[6/9] Instalando agentes en modo GLOBAL..."
 
+    # Una actualización desde 0.3.0 conserva el plugin del menú Ctrl+P y el
+    # antiguo comando de flujo. Se retiran antes de copiar, y es idempotente.
+    cleanup_legacy_opencode_ui "$OPENCODE_GLOBAL_DIR"
+
     mkdir -p "$OPENCODE_GLOBAL_DIR/agents"
     mkdir -p "$OPENCODE_GLOBAL_DIR/skills"
-    mkdir -p "$OPENCODE_GLOBAL_DIR/commands"
-    mkdir -p "$OPENCODE_GLOBAL_DIR/plugins"
     for skill_dir in lemoria frontend backend database testing code-review git-workflow documentation; do
         if [ -d ".opencode/skills/$skill_dir" ]; then
             mkdir -p "$OPENCODE_GLOBAL_DIR/skills/$skill_dir"
@@ -184,40 +186,17 @@ if [ "$INSTALL_MODE" = "1" ]; then
     done
 
     cp .opencode/agents/*.md "$OPENCODE_GLOBAL_DIR/agents/"
-    if compgen -G ".opencode/commands/*.md" >/dev/null; then
-        cp .opencode/commands/*.md "$OPENCODE_GLOBAL_DIR/commands/"
-    fi
     echo "  Agentes copiados a $OPENCODE_GLOBAL_DIR/agents/"
     echo "  Skills copiados a $OPENCODE_GLOBAL_DIR/skills/"
-    echo "  Comandos copiados a $OPENCODE_GLOBAL_DIR/commands/"
-
-    if install_opencode_lemoria_menu "$LEMORIA_DIR" "$OPENCODE_GLOBAL_DIR" "$OPENCODE_GLOBAL_DIR/agents"; then
-        echo "  Menú Ctrl+P Lemoria instalado en $OPENCODE_GLOBAL_DIR/plugins/lemoria-menu/"
-        echo "  Plugin habilitado en $OPENCODE_GLOBAL_DIR/cli.json"
-    else
-        echo "  ! No se pudo instalar el menú Ctrl+P de Lemoria"
-    fi
-
-    if [ ! -f "$OPENCODE_GLOBAL_DIR/opencode.json" ]; then
-        cat > "$OPENCODE_GLOBAL_DIR/opencode.json" <<- 'EOF'
-{
-  "$schema": "https://opencode.ai/config.json",
-  "default_agent": "orchestrator",
-  "skills": ["~/.config/opencode/skills"]
-}
-EOF
-        echo "  Config global creada: $OPENCODE_GLOBAL_DIR/opencode.json"
-    else
-        echo "  Config global ya existe: $OPENCODE_GLOBAL_DIR/opencode.json (no se modifica)"
-        echo "  Asegúrate de que incluya:"
-        echo '    "default_agent": "orchestrator"'
-        echo '    "skills": ["~/.config/opencode/skills"]'
-    fi
+    ensure_global_default_agent "$OPENCODE_GLOBAL_DIR"
     echo ""
-    echo "  ✓ Agentes y comandos disponibles en cualquier proyecto al abrir OpenCode"
-    echo "  Usa /lemoria desde el prompt de OpenCode para iniciar el flujo SDD."
+    echo "  ✓ Agentes y skills disponibles en cualquier proyecto al abrir OpenCode"
+    echo "  Abre OpenCode en tu proyecto y describí la feature; el orquestador corre el flujo."
 else
     echo "[6/9] Instalación en modo PROYECTO..."
+    # El plugin viejo se instalaba siempre en el directorio global, así que se
+    # limpia también acá aunque en este modo los agentes queden locales.
+    cleanup_legacy_opencode_ui "$OPENCODE_GLOBAL_DIR"
     # Los .md ya estan en .opencode/agents del repo; lo que falta es el config
     # local apuntando al orquestador, porque no viene por defecto.
     if [ ! -f "$LEMORIA_DIR/opencode.jsonc" ]; then
@@ -233,14 +212,8 @@ EOF
         echo "  Config local ya existe: opencode.jsonc (no se modifica)"
         echo '  Asegúrate de que incluya: "default_agent": "orchestrator"'
     fi
-    if install_opencode_lemoria_menu "$LEMORIA_DIR" "$OPENCODE_GLOBAL_DIR" "$LEMORIA_DIR/.opencode/agents"; then
-        echo "  Menú Ctrl+P Lemoria instalado en $OPENCODE_GLOBAL_DIR/plugins/lemoria-menu/"
-        echo "  Plugin habilitado en $OPENCODE_GLOBAL_DIR/cli.json"
-    else
-        echo "  ! No se pudo instalar el menú Ctrl+P de Lemoria"
-    fi
-    echo "  Agentes en .opencode/agents/ y comandos en .opencode/commands/"
-    echo "  Abre OpenCode desde esta carpeta para usarlos; usa /lemoria en el prompt."
+    echo "  Agentes en .opencode/agents/ y skills en .opencode/skills/"
+    echo "  Abre OpenCode desde esta carpeta para usarlos y describí la feature."
 fi
 
 # ----- Context7 (documentation MCP) -----
@@ -356,8 +329,8 @@ echo "  gh (GitHub CLI) no detectado. El github-agent usará git manual."
 echo "  Para crear PRs y gestionar repos: https://cli.github.com/"
 echo ""
 fi
-echo "  Skills disponibles:"
-echo "    frontend, backend, database, testing, code-review, git-workflow, documentation"
+echo "  Skills disponibles (8):"
+echo "    lemoria, frontend, backend, database, testing, code-review, git-workflow, documentation"
 echo ""
 echo "  Para abrir Obsidian vault:"
     echo "    obsidian $LEMORIA_VAULT_DIR"
@@ -379,6 +352,6 @@ echo "    lemoria usage --json   # lo mismo, estructurado"
 fi
 echo ""
 echo "  Para fijar el modelo de un agente (opcional, hereda por defecto):"
-echo "    lemoria agent model implementation-agent <modelo> -v <effort>"
+echo "    lemoria agent model implementation-agent <modelo> --effort <effort>"
 echo "    lemoria agent model implementation-agent --clear   # volver a heredar"
 echo ""

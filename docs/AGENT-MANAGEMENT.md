@@ -19,20 +19,22 @@ La revisión de compatibilidad v2 dejó estos contratos documentados:
 
 - Los agentes usan `permissions` como lista de reglas (`action`, `resource`,
   `effect`) en lugar del frontmatter legado `permission`.
-- `opencode.jsonc` acepta `commands` y `skills` con la forma v2; el parser de
-  Lemoria mantiene fallbacks para formas legacy para no romper instalaciones
-  existentes.
-- El modelo y esfuerzo se escriben y leen como `model` + `variant` en el
-  frontmatter; cuando OpenCode serializa `model#variant`, Lemoria lo normaliza en
-  el borde de lectura/escritura.
+- `opencode.jsonc` acepta `commands` y `skills` como parte del esquema de
+  OpenCode; no es una clave de configuración de Lemoria. Lemoria ya no usa
+  `commands`.
+- El modelo y esfuerzo se escriben y leen en la forma v2
+  `model: provider/model#variant` en el frontmatter. La clave separada `variant`
+  es legacy: `lemoria agent model` la elimina al reescribir el pin. Lemoria
+  normaliza ambas formas en el borde de lectura/escritura.
 - El panel de Omarchy resuelve agentes conocidos combinando agentes gestionados,
   agentes observados por telemetría y built-ins de OpenCode. La precedencia deja
   las definiciones bundled como último fallback para respetar configuración local
   y global del usuario.
 
-Validación de la migración: 152 tests pasaron, lint de archivos cambiados pasó y
-el smoke test pasó. El lint completo del repo conserva incidencias de
-import/style preexistentes fuera de esta migración.
+Validación histórica de la migración: 152 tests pasaron, lint de archivos
+cambiados pasó y el smoke test pasó (hoy la suite completa son 252 tests). El
+lint completo del repo conserva incidencias de import/style preexistentes fuera
+de esta migración.
 
 ---
 
@@ -70,16 +72,23 @@ frontmatter tiene `model:`  →  usa ese modelo          (source: pinned)
 frontmatter NO tiene `model:`  →  hereda del invocador  (source: inherits)
 ```
 
-Los 7 subagentes de Lemoria no declaran modelo, y el orquestador corre en
-`big-pickle`. Resultado: los 7 usan `big-pickle`, y `agents.model` es `NULL`
-para los 8. **Eso es correcto, no un bug.** Fijar un modelo es opcional y se
-decide agente por agente.
+> **Orquestador vs. subagentes.** El modelo y effort del orquestador son de
+> sesión: se eligen en OpenCode con `/models` y `/variants`, y Lemoria no los
+> escribe en ningún `.md`. Los subagentes se pinean por CLI con
+> `lemoria agent model <agente> <provider/model> --effort <effort>`, que escribe
+> `model: provider/model#variant` en el frontmatter. Un agente sin pinear hereda
+> el modelo de la sesión del orquestador.
+
+Los 7 subagentes de Lemoria no declaran modelo. Si el orquestador corre en `X`,
+los 7 subagentes sin pin usan `X`, y `agents.model` queda `NULL` para los 8.
+**Eso es correcto, no un bug.** Fijar un modelo es opcional y se decide agente
+por agente.
 
 ### Fijar uno
 
 ```bash
 lemoria agent model review-agent anthropic/claude-sonnet-4-5
-lemoria agent model review-agent anthropic/claude-sonnet-4-5 --variant high
+lemoria agent model review-agent anthropic/claude-sonnet-4-5 --effort high
 ```
 
 Esto escribe en el frontmatter y vuelve a sincronizar:
@@ -97,8 +106,7 @@ permissions:
   - action: edit
     resource: "*"
     effect: deny
-model: anthropic/claude-sonnet-4-5
-variant: high
+model: anthropic/claude-sonnet-4-5#high
 ---
 ```
 
@@ -109,8 +117,10 @@ final del bloque, a columna 0, porque insertarla "después de la última clave d
 primer nivel" caería dentro de mappings/listas anidadas como `permissions:` y rompería el
 YAML.
 
-`variant` es el reasoning effort. Solo tiene sentido junto a un `model` fijado:
-`--variant` sin modelo no hace nada por sí solo.
+El effort se serializa como sufijo del modelo (`provider/model#high`), no como
+clave separada. `--effort` es el alias de cara al usuario de `--variant`;
+`lemoria agent effort <agente> <effort>` lo cambia sin tocar el modelo. Solo
+tiene sentido junto a un `model` fijado: sin modelo no hace nada por sí solo.
 
 ### Quitar un pin
 
@@ -119,18 +129,30 @@ lemoria agent model review-agent --clear
 ```
 
 Borra las claves `model` y `variant` del frontmatter y devuelve el agente a la
-herencia. Para volver a consultar el valor actual, el comando sin argumentos:
+herencia: vuelve a usar el modelo de la sesión del orquestador. Para volver a
+consultar el valor actual, el comando sin argumentos:
 
 ```bash
 lemoria agent model review-agent
 # review-agent: inherited (no model in frontmatter)
 ```
 
-Si el `.md` llegara a quedar a mano, esto es lo que produce `--clear`:
+Así queda el frontmatter después de `--clear` — sin `model` ni `variant`:
 
 ```yaml
-model: anthropic/claude-sonnet-4-5
-variant: high
+---
+description: >-
+  Technical review — reviews code, verifies PRD alignment, detects technical
+  debt, and validates traceability. Language-agnostic.
+mode: subagent
+permissions:
+  - action: shell
+    resource: "*"
+    effect: deny
+  - action: edit
+    resource: "*"
+    effect: deny
+---
 ```
 
 La API de Python sí expone el borrado explícito, que es lo que cubren los tests:
@@ -179,6 +201,8 @@ Una sesión se considera **viva** si fue tocada en los últimos 5 minutos
 recencia es la señal honesta.
 
 ### El desglose por agente
+
+Ejemplo de salida (el modelo mostrado depende de la sesión del orquestador):
 
 ```console
 $ lemoria agent status

@@ -213,72 +213,201 @@ print_db_stop_hint() {
     esac
 }
 
+# ----- Configuración global de OpenCode -----
 
+# Hasta 0.3.0 el instalador copiaba un plugin TUI (menú Ctrl+P) y un slash
+# command de Lemoria. Ninguno de los dos existe ya, pero una instalación que se
+# actualiza conserva los archivos: el plugin seguiría cargándose desde cli.json
+# y el comando seguiría apareciendo en el prompt. Esta función los retira sin
+# tocar otros plugins ni otros comandos del usuario.
+#
+# El orden importa: primero se limpia cli.json y solo después se borran los
+# archivos. Si cli.json no se puede leer o no parsea, se deja todo como está:
+# borrar el plugin antes dejaría una entrada apuntando a algo inexistente.
+#
+# Es idempotente: si no hay nada que limpiar no imprime nada, así una
+# instalación nueva no gana ruido.
+cleanup_legacy_opencode_ui() {
+    local opencode_dir="$1"
+    local removed=false
+    local cli_state=""
+    # true = no hay registro en cli.json que pueda quedar colgado; se puede
+    # borrar el plugin y el comando. false = no se toca nada.
+    local cli_safe=true
 
-# ----- OpenCode TUI plugin -----
+    if [ -f "$opencode_dir/cli.json" ]; then
+        cli_state="$(OPENCODE_DIR="$opencode_dir" python3 - <<'PYCLEANUP'
+import json
+import os
+import sys
+from pathlib import Path
 
-install_opencode_lemoria_menu() {
-    local repo_dir="$1" opencode_dir="$2" agents_dir="${3:-$opencode_dir/agents}"
-    local source_dir="$repo_dir/opencode/plugins/lemoria-menu"
-    local target_dir="$opencode_dir/plugins/lemoria-menu"
-    local cli_json="$opencode_dir/cli.json"
+path = Path(os.environ["OPENCODE_DIR"]) / "cli.json"
+try:
+    original = path.read_text()
+except (OSError, UnicodeDecodeError):
+    # No se pudo leer: mejor no tocarlo ni inventar un respaldo vacío.
+    print("unreadable", end="")
+    sys.exit(0)
 
-    if [ ! -f "$source_dir/tui.js" ]; then
-        echo "  ! Plugin Lemoria menu no encontrado en $source_dir"
-        return 1
+try:
+    data = json.loads(original or "{}")
+except json.JSONDecodeError:
+    # No es nuestro archivo para romper: si no parsea, se respalda y se deja
+    # exactamente como estaba.
+    path.with_suffix(path.suffix + ".bak").write_text(original)
+    print("invalid", end="")
+    sys.exit(0)
+
+plugins = data.get("plugins") if isinstance(data, dict) else None
+if not isinstance(plugins, list):
+    print("noop", end="")
+    sys.exit(0)
+
+# str() porque una entrada corrupta o no-string no debe romper la limpieza.
+kept = [entry for entry in plugins if "lemoria-menu" not in str(entry)]
+if len(kept) == len(plugins):
+    print("noop", end="")
+    sys.exit(0)
+
+path.with_suffix(path.suffix + ".bak").write_text(original)
+data["plugins"] = kept
+path.write_text(json.dumps(data, indent=2) + "\n")
+print("changed", end="")
+PYCLEANUP
+)" || cli_state="error"
+
+        case "$cli_state" in
+            changed) removed=true ;;
+            invalid)
+                echo "  ! $opencode_dir/cli.json no es JSON válido; se dejó intacto"
+                echo "    (respaldo en cli.json.bak)"
+                cli_safe=false
+                ;;
+            error|unreadable)
+                echo "  ! No se pudo leer $opencode_dir/cli.json"
+                cli_safe=false
+                ;;
+        esac
     fi
 
-    mkdir -p "$target_dir"
-    cp "$source_dir/tui.js" "$target_dir/tui.js"
+    if $cli_safe; then
+        if [ -d "$opencode_dir/plugins/lemoria-menu" ]; then
+            if rm -rf "$opencode_dir/plugins/lemoria-menu" 2>/dev/null; then
+                removed=true
+            else
+                echo "  ! No se pudo quitar $opencode_dir/plugins/lemoria-menu" >&2
+            fi
+        fi
 
-    # El plugin necesita saber dónde vive el repo de Lemoria y en qué
-    # directorio están los .md de los agentes, para escribir el pin del modelo
-    # en el sitio correcto sin ensuciar el repositorio del usuario.
-    LEMORIA_REPO="$repo_dir" AGENTS_DIR="$agents_dir" TARGET_DIR="$target_dir" python3 - <<'PYCFG'
+        if [ -f "$opencode_dir/commands/lemoria.md" ]; then
+            if rm -f "$opencode_dir/commands/lemoria.md" 2>/dev/null; then
+                removed=true
+            else
+                echo "  ! No se pudo quitar $opencode_dir/commands/lemoria.md" >&2
+            fi
+        fi
+        # rmdir solo borra el directorio si quedó vacío: si el usuario tiene
+        # otros comandos propios, se conservan y el directorio también.
+        rmdir "$opencode_dir/commands" 2>/dev/null || true
+    else
+        echo "  ! No se quitan el plugin ni el comando anteriores: cli.json podría"
+        echo "    seguir apuntando a un plugin que ya no existiría."
+    fi
+
+    if $removed; then
+        echo "  Limpiado menú Ctrl+P anterior (si existía)"
+    fi
+}
+
+# Deja "default_agent": "orchestrator" en el config global SIN pisar el resto
+# de la configuración del usuario. En una instalación nueva crea el archivo; en
+# una que se actualiza agrega solo la clave que falta. Si el usuario ya eligió
+# otro agente por defecto, se respeta y solo se avisa: el instalador no es
+# dueño de esa decisión.
+ensure_global_default_agent() {
+    local opencode_dir="$1"
+    local config="$opencode_dir/opencode.json"
+    local answer=""
+    local state=""
+    local current=""
+
+    if [ ! -f "$config" ]; then
+        mkdir -p "$opencode_dir"
+        cat > "$config" <<- 'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "orchestrator",
+  "skills": ["~/.config/opencode/skills"]
+}
+EOF
+        echo "  Config global creada: $config"
+        return 0
+    fi
+
+    answer="$(OPENCODE_CONFIG="$config" python3 - <<'PYDEFAULT'
 import json
 import os
+import sys
 from pathlib import Path
 
-target = Path(os.environ["TARGET_DIR"])
-target.mkdir(parents=True, exist_ok=True)
-(target / "config.json").write_text(
-    json.dumps(
-        {"repo": os.environ["LEMORIA_REPO"], "agentsDir": os.environ["AGENTS_DIR"]},
-        indent=2,
-    )
-    + "\n"
-)
+path = Path(os.environ["OPENCODE_CONFIG"])
+try:
+    original = path.read_text()
+except (OSError, UnicodeDecodeError):
+    print("unreadable", end="")
+    sys.exit(0)
 
-PYCFG
+try:
+    data = json.loads(original or "{}")
+except json.JSONDecodeError:
+    print("invalid", end="")
+    sys.exit(0)
 
-    CLI_JSON="$cli_json" PLUGIN_PATH="$target_dir" python3 - <<'PYCFG'
-import json
-import os
-from pathlib import Path
+if not isinstance(data, dict):
+    print("invalid", end="")
+    sys.exit(0)
 
-path = Path(os.environ["CLI_JSON"])
-plugin = os.environ["PLUGIN_PATH"]
-path.parent.mkdir(parents=True, exist_ok=True)
+if "default_agent" in data:
+    if data["default_agent"] == "orchestrator":
+        print("present", end="")
+    else:
+        print("differs\t" + json.dumps(data["default_agent"]), end="")
+    sys.exit(0)
 
-if path.exists():
-    try:
-        data = json.loads(path.read_text() or "{}")
-    except json.JSONDecodeError:
-        path.with_suffix(path.suffix + ".bak").write_text(path.read_text())
-        data = {}
-else:
-    data = {"$schema": "https://opencode.ai/v2/cli.json"}
-
-plugins = data.get("plugins")
-if not isinstance(plugins, list):
-    plugins = []
-
-# Idempotente: conserva los plugins que ya tenía el usuario.
-plugins = [entry for entry in plugins if entry != plugin]
-plugins.append(plugin)
-data["plugins"] = plugins
+path.with_suffix(path.suffix + ".bak").write_text(original)
+data["default_agent"] = "orchestrator"
 path.write_text(json.dumps(data, indent=2) + "\n")
-PYCFG
+print("added", end="")
+PYDEFAULT
+)" || answer="error"
+
+    # `differs` trae el valor actual después de un tab: se parte en dos.
+    if [ -n "$answer" ]; then
+        IFS=$'\t' read -r state current <<< "$answer"
+    fi
+
+    case "$state" in
+        added)
+            echo "  Config global ya existe: $config (se agregó \"default_agent\": \"orchestrator\")"
+            ;;
+        present)
+            echo "  Config global ya existe: $config (\"default_agent\" ya era \"orchestrator\")"
+            ;;
+        differs)
+            echo "  Config global ya existe: $config"
+            echo "  ! Tenés \"default_agent\": $current — se respeta tu elección"
+            echo "    Para usar el flujo de Lemoria, cambialo a \"orchestrator\"."
+            ;;
+        invalid)
+            echo "  Config global ya existe: $config (no es JSON válido, no se modifica)"
+            echo "  ! Revisalo a mano: el flujo espera \"default_agent\": \"orchestrator\""
+            ;;
+        *)
+            echo "  Config global ya existe: $config (no se pudo modificar)"
+            echo "  ! Revisá que incluya \"default_agent\": \"orchestrator\""
+            ;;
+    esac
 }
 
 # ----- Mensajes de instalación -----
